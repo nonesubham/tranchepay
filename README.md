@@ -235,10 +235,28 @@ ruff check . && ruff format --check .
 mypy
 ```
 
-The test suite makes **zero network calls** and never touches a real Razorpay
+The default suite makes **zero network calls** and never touches a real Razorpay
 account: `tests/fakes.py` implements the client's resources in-process, including real
 HMAC-SHA256 signature verification, and `tests/test_composer_modes.py` asserts that the
 official `razorpay.Client` satisfies the protocol tranchepay expects.
+
+### Live sandbox integration tests (opt-in)
+
+`tests/test_integration_razorpay.py` creates real orders in a Razorpay **test**
+account, proving the payloads tranchepay builds are accepted by the actual SDK and that
+what it reports matches what Razorpay stored. It is **skipped automatically when
+credentials are absent**, so `pytest` on a machine without keys stays green and offline;
+CI runs `pytest -m "not integration"` so it never needs secrets.
+
+```bash
+cp .env.example .env   # then fill in your rzp_test_ keys
+./run_integration.sh   # pytest tests/test_integration_razorpay.py -v -m integration
+```
+
+Live: `order.create`, `order.fetch`, and the SDK's webhook HMAC. Mocked: `payment.fetch`
+and `verify_payment_signature`, because a payment only exists once a human completes
+checkout in a browser. Keys are read from the environment (never hardcoded) and `.env`
+is gitignored.
 
 ## COMPLIANCE
 
