@@ -12,9 +12,17 @@ from typing import Any
 
 from .enums import PaymentMode
 from .exceptions import PaymentComposeError
-from .models import DEFAULT_CURRENCY, ChargesConfig, OrderResult, SplitConfig
+from .models import (
+    DEFAULT_CURRENCY,
+    ChargesConfig,
+    OrderResult,
+    SplitConfig,
+)
 from .money import gross_up, require_paise
+from .orders import create_razorpay_order, order_result
 from .protocol import RazorpayClientProtocol
+from .split_flow import SplitFlow
+from .store import InMemorySessionStore, SessionStore
 
 __all__ = ["PaymentComposer"]
 
@@ -24,10 +32,11 @@ def _ensure_client(client: object) -> RazorpayClientProtocol:
 
     Args:
         client: Candidate client, typed loosely so untyped callers are checked at
-            runtime instead of trusted.
+            runtime rather than trusted.
 
     Returns:
-        The same object, narrowed to :class:`~tranchepay.protocol.RazorpayClientProtocol`.
+        The same object, narrowed to
+        :class:`~tranchepay.protocol.RazorpayClientProtocol`.
 
     Raises:
         TypeError: If the object does not expose ``order``, ``payment``, and
@@ -42,20 +51,42 @@ def _ensure_client(client: object) -> RazorpayClientProtocol:
     return client
 
 
+def _ensure_store(store: object) -> SessionStore:
+    """Return ``store`` if it implements the :class:`SessionStore` protocol.
+
+    Args:
+        store: Candidate store, typed loosely so untyped callers are checked at
+            runtime rather than trusted.
+
+    Returns:
+        The same object, narrowed to :class:`~tranchepay.store.SessionStore`.
+
+    Raises:
+        TypeError: If the object does not implement ``save``/``get``/``update``.
+    """
+    if not isinstance(store, SessionStore):
+        msg = (
+            "store must implement the SessionStore protocol (save/get/update), "
+            f"not {type(store).__name__}"
+        )
+        raise TypeError(msg)
+    return store
+
+
 class PaymentComposer:
     """Creates Razorpay orders for the three supported payment modes.
 
     Args:
         client: A configured ``razorpay.Client`` instance (or any object exposing
-            the same ``order``/``payment``/``utility`` resources). It is used
-            as-is and never mutated.
+            the same ``order``/``payment``/``utility`` resources). Used as-is and
+            never mutated.
         charges: Required to use :attr:`PaymentMode.WITH_CHARGES`; carries the
             ``Decimal`` fee rate and the explicit rounding policy.
         split: Tranche ceiling for :attr:`PaymentMode.SPLIT`. Defaults to ₹1,999
             (see the COMPLIANCE section of the README).
-        store: Session store for split sessions. Defaults to an in-process
-            store, which is fine for tests and single-process apps but loses
-            sessions on restart; pass a durable adapter for production.
+        store: Session store for split sessions. Defaults to an in-process store,
+            which is fine for tests and single-process apps but loses sessions on
+            restart and shares nothing between workers.
         currency: ISO-4217 currency used for every order this composer creates.
 
     Raises:
@@ -68,19 +99,25 @@ class PaymentComposer:
         *,
         charges: ChargesConfig | None = None,
         split: SplitConfig | None = None,
-        store: object | None = None,
+        store: SessionStore | None = None,
         currency: str = DEFAULT_CURRENCY,
     ) -> None:
         self._client = _ensure_client(client)
         self._charges = charges
         self._split = split if split is not None else SplitConfig()
         self._currency = currency
-        self._store = store
+        self._store = _ensure_store(store) if store is not None else InMemorySessionStore()
+        self._flow: SplitFlow | None = None
 
     @property
     def client(self) -> RazorpayClientProtocol:
         """The client this composer was configured with, unchanged."""
         return self._client
+
+    @property
+    def store(self) -> SessionStore:
+        """The session store in use, including the default in-process store."""
+        return self._store
 
     def create_order(
         self,
@@ -106,31 +143,42 @@ class PaymentComposer:
             currency: Overrides the composer's currency for this order.
 
         Returns:
-            The created order, wrapped with the tranchepay context: for
-            ``WITH_CHARGES`` the grossed-up ``amount_paise`` plus ``net_paise``
-            and ``fee_paise``; for ``SPLIT`` the first tranche and the session id.
+            The created order wrapped with the tranchepay context: the grossed-up
+            ``amount_paise`` plus ``net_paise``/``fee_paise`` for
+            ``WITH_CHARGES``, or the first tranche and a ``session_id`` for
+            ``SPLIT``.
 
         Raises:
             TypeError: If ``amount_paise`` is not an ``int``.
             ValueError: If ``amount_paise`` is not positive.
-            PaymentComposeError: As described below.
             PaymentComposeError: If the mode is unknown, if ``WITH_CHARGES`` is
                 requested without a ``ChargesConfig``, or if the API response has
                 no order id.
         """
         require_paise(amount_paise, "amount_paise")
         try:
-            mode = PaymentMode(mode)
+            resolved = PaymentMode(mode)
         except ValueError as exc:
             msg = f"unknown payment mode: {mode!r}"
             raise PaymentComposeError(msg) from exc
+        # Dispatch on the value rather than the member so the fallback below stays
+        # reachable if the enum ever grows a mode that this method does not handle.
+        mode_value = resolved.value
         order_currency = currency or self._currency
 
-        if mode is PaymentMode.EXACT:
-            raw = self._create_razorpay_order(amount_paise, order_currency, receipt, notes)
-            return self._to_result(raw, mode=mode, amount_paise=amount_paise, receipt=receipt)
+        if mode_value == PaymentMode.EXACT.value:
+            raw = create_razorpay_order(
+                self._client, amount_paise, currency=order_currency, receipt=receipt, notes=notes
+            )
+            return order_result(
+                raw,
+                mode=resolved,
+                amount_paise=amount_paise,
+                currency_default=order_currency,
+                receipt=receipt,
+            )
 
-        if mode is PaymentMode.WITH_CHARGES:
+        if mode_value == PaymentMode.WITH_CHARGES.value:
             if self._charges is None:
                 msg = (
                     "PaymentMode.WITH_CHARGES requires a ChargesConfig; pass "
@@ -138,64 +186,64 @@ class PaymentComposer:
                 )
                 raise PaymentComposeError(msg)
             gross_paise = gross_up(amount_paise, self._charges.fee_rate, self._charges.rounding)
-            raw = self._create_razorpay_order(gross_paise, order_currency, receipt, notes)
-            return self._to_result(
+            raw = create_razorpay_order(
+                self._client, gross_paise, currency=order_currency, receipt=receipt, notes=notes
+            )
+            return order_result(
                 raw,
-                mode=mode,
+                mode=resolved,
                 amount_paise=gross_paise,
+                currency_default=order_currency,
                 receipt=receipt,
                 net_paise=amount_paise,
                 fee_paise=gross_paise - amount_paise,
             )
 
-        msg = f"unsupported payment mode: {mode!r}"
+        if mode_value == PaymentMode.SPLIT.value:
+            return self._split_flow().start(
+                amount_paise, receipt=receipt, notes=notes, currency=currency
+            )
+
+        msg = f"unsupported payment mode: {mode!r}"  # pragma: no cover - defensive
         raise PaymentComposeError(msg)
 
-    def _create_razorpay_order(
+    def verify_and_advance(
         self,
-        amount_paise: int,
-        currency: str,
-        receipt: str | None,
-        notes: Mapping[str, Any] | None,
-    ) -> dict[str, Any]:
-        """Call ``client.order.create`` with the standard tranchepay payload."""
-        data: dict[str, Any] = {
-            "amount": amount_paise,
-            "currency": currency,
-            "payment_capture": 1,
-        }
-        if receipt is not None:
-            data["receipt"] = receipt
-        if notes is not None:
-            data["notes"] = dict(notes)
-        return self._client.order.create(data)
+        session_id: str,
+        order_id: str,
+        payment_id: str,
+        signature: str,
+    ) -> OrderResult | None:
+        """Verify one tranche payment and create the next order, if any.
 
-    def _to_result(
-        self,
-        raw: Mapping[str, Any],
-        *,
-        mode: PaymentMode,
-        amount_paise: int,
-        receipt: str | None = None,
-        session_id: str | None = None,
-        tranche_index: int | None = None,
-        net_paise: int | None = None,
-        fee_paise: int = 0,
-    ) -> OrderResult:
-        """Wrap an API response into an :class:`OrderResult`."""
-        order_id = raw.get("id")
-        if not isinstance(order_id, str) or not order_id:
-            msg = f"Razorpay order response has no usable 'id' field: {dict(raw)!r}"
-            raise PaymentComposeError(msg)
-        return OrderResult(
-            order_id=order_id,
-            amount_paise=amount_paise,
-            currency=str(raw.get("currency") or self._currency),
-            mode=mode,
-            session_id=session_id,
-            tranche_index=tranche_index,
-            net_paise=net_paise,
-            fee_paise=fee_paise,
-            receipt=str(raw.get("receipt")) if raw.get("receipt") is not None else receipt,
-            raw=dict(raw),
-        )
+        Idempotent and safe against retries and concurrent callbacks: a replay of
+        an already-verified tranche advances nothing and returns the current
+        pending order.
+
+        Args:
+            session_id: Session id returned with the first tranche order.
+            order_id: Order the customer paid (``razorpay_order_id``).
+            payment_id: Payment id from checkout (``razorpay_payment_id``).
+            signature: Signature from checkout (``razorpay_signature``).
+
+        Returns:
+            The next tranche order for checkout, or ``None`` when the payment
+            completed the session.
+
+        Raises:
+            VerificationError: If the signature is invalid or the payment is not
+                captured.
+            AmountMismatchError: If the captured amount is not the tranche amount.
+            SessionNotFoundError: If the session id is unknown to the store.
+            SessionStateError: If the order is not the current pending tranche's
+                order, or the session is already closed.
+        """
+        return self._split_flow().verify_and_advance(session_id, order_id, payment_id, signature)
+
+    def _split_flow(self) -> SplitFlow:
+        """Return the split flow for this composer, building it on first use."""
+        if self._flow is None:
+            self._flow = SplitFlow(
+                self._client, self._store, config=self._split, currency=self._currency
+            )
+        return self._flow

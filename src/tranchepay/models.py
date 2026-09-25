@@ -99,6 +99,8 @@ class Tranche(BaseModel):
         status: Lifecycle state of the tranche.
     """
 
+    model_config = ConfigDict(validate_assignment=True)
+
     index: int = Field(ge=0)
     amount_paise: int = Field(gt=0)
     order_id: str | None = None
@@ -111,8 +113,12 @@ class SplitSession(BaseModel):
 
     This model is the unit of persistence for ``SessionStore``. It round-trips
     through ``model_dump_json`` / ``model_validate_json`` so a developer can
-    persist it in their own database instead of using a shipped store.
+    persist it in their own database instead of using a shipped store. Assigning
+    to a field revalidates it, so ``tranche.status = "paid"`` is coerced rather
+    than silently stored as a string.
     """
+
+    model_config = ConfigDict(validate_assignment=True)
 
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     amount_paise: int = Field(gt=0)
@@ -152,6 +158,10 @@ class SplitSession(BaseModel):
     def paid_tranches(self) -> list[Tranche]:
         """Return every tranche currently captured and not yet refunded."""
         return [t for t in self.tranches if t.status is TrancheStatus.PAID]
+
+    def is_fully_paid(self) -> bool:
+        """Whether every tranche has been captured."""
+        return all(tranche.status is TrancheStatus.PAID for tranche in self.tranches)
 
     def total_paid_paise(self) -> int:
         """Return the sum of all tranches currently captured."""

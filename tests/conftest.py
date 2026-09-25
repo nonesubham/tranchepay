@@ -11,7 +11,15 @@ from decimal import Decimal
 import pytest
 
 from tests.fakes import FakeRazorpayClient
-from tranchepay import ChargesConfig, PaymentComposer, SplitSession, Tranche, TrancheStatus
+from tranchepay import (
+    ChargesConfig,
+    InMemorySessionStore,
+    PaymentComposer,
+    SplitConfig,
+    SplitSession,
+    Tranche,
+    TrancheStatus,
+)
 
 SessionFactory = Callable[..., SplitSession]
 
@@ -53,3 +61,22 @@ def fake_client() -> FakeRazorpayClient:
 def composer(fake_client: FakeRazorpayClient) -> PaymentComposer:
     """A composer wired to the fake client and the default configs."""
     return PaymentComposer(fake_client, charges=ChargesConfig(fee_rate=Decimal("0.0236")))
+
+
+@pytest.fixture
+def split_store() -> InMemorySessionStore:
+    """An in-process store that tests can inspect directly."""
+    return InMemorySessionStore()
+
+
+@pytest.fixture
+def split_composer(
+    fake_client: FakeRazorpayClient, split_store: InMemorySessionStore
+) -> PaymentComposer:
+    """A composer with a small tranche ceiling so tests stay tiny."""
+    return PaymentComposer(
+        fake_client,
+        split=SplitConfig(tranche_paise=1_000),
+        store=split_store,
+        currency="INR",
+    )

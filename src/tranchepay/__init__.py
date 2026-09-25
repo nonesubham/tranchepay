@@ -38,6 +38,7 @@ from .models import (
 )
 from .money import gross_up, require_paise, validate_fee_rate
 from .split import SplitPlan, plan_tranches
+from .store import InMemorySessionStore, SessionStore
 from .webhooks import verify_webhook
 
 __version__ = "0.1.0"
@@ -47,6 +48,7 @@ __all__ = [
     "DEFAULT_TRANCHE_PAISE",
     "AmountMismatchError",
     "ChargesConfig",
+    "InMemorySessionStore",
     "OrderResult",
     "PartialPaymentError",
     "PaymentComposeError",
@@ -56,6 +58,7 @@ __all__ = [
     "SessionNotFoundError",
     "SessionStateError",
     "SessionStatus",
+    "SessionStore",
     "SplitConfig",
     "SplitPlan",
     "SplitSession",
