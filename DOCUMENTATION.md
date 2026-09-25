@@ -52,23 +52,9 @@ anything the SDK gives you is still there under `.raw`.
 
 ## Installation
 
-`tranchepay` is **not on PyPI yet** — the release is still pending — so install it
-from source:
-
 ```bash
-git clone https://github.com/nonesubham/tranchepay.git
-cd tranchepay
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install tranchepay
 ```
-
-Or install straight from GitHub without cloning:
-
-```bash
-pip install "tranchepay @ git+https://github.com/nonesubham/tranchepay.git"
-```
-
-Once the package is published, `pip install tranchepay` will be the supported path.
 
 Requirements:
 
@@ -77,10 +63,22 @@ Requirements:
 - `pydantic>=2.6` — installed automatically.
 
 There are no runtime extras. The optional development extras add the test and
-type-checking toolchain (`pytest`, `pytest-cov`, `ruff`, `mypy`, `python-dotenv`):
+type-checking toolchain (`pytest`, `pytest-cov`, `ruff`, `mypy`, `python-dotenv`).
+
+Working on tranchepay itself? Clone it and install an editable copy with those
+extras:
 
 ```bash
+git clone https://github.com/nonesubham/tranchepay.git
+cd tranchepay
+python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
+```
+
+Or install a specific revision straight from GitHub:
+
+```bash
+pip install "tranchepay @ git+https://github.com/nonesubham/tranchepay.git"
 ```
 
 ## Initialization
