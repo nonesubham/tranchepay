@@ -22,9 +22,10 @@ from __future__ import annotations
 import threading
 from typing import Protocol, runtime_checkable
 
+from .exceptions import SessionNotFoundError
 from .models import SplitSession
 
-__all__ = ["InMemorySessionStore", "SessionStore"]
+__all__ = ["InMemorySessionStore", "SessionStore", "load_session"]
 
 
 @runtime_checkable
@@ -79,3 +80,23 @@ class InMemorySessionStore:
         """Number of stored sessions."""
         with self._lock:
             return len(self._sessions)
+
+
+def load_session(store: SessionStore, session_id: str) -> SplitSession:
+    """Return the stored session, or raise :class:`SessionNotFoundError`.
+
+    Args:
+        store: Store to read from.
+        session_id: Session to load.
+
+    Returns:
+        The stored session.
+
+    Raises:
+        SessionNotFoundError: If the id is unknown to the store.
+    """
+    session = store.get(session_id)
+    if session is None:
+        msg = f"unknown split session: {session_id}"
+        raise SessionNotFoundError(msg)
+    return session

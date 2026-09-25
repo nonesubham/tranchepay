@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from .models import DEFAULT_TRANCHE_PAISE
+from .models import DEFAULT_TRANCHE_PAISE, SplitSession, Tranche
 from .money import require_paise
 
-__all__ = ["SplitPlan", "plan_tranches"]
+__all__ = ["SplitPlan", "build_session", "plan_tranches"]
 
 
 class SplitPlan(BaseModel):
@@ -84,4 +84,25 @@ def plan_tranches(amount_paise: int, tranche_paise: int = DEFAULT_TRANCHE_PAISE)
         amount_paise=amount_paise,
         tranche_paise=tranche_paise,
         amounts_paise=tuple(amounts),
+    )
+
+
+def build_session(plan: SplitPlan, *, currency: str) -> SplitSession:
+    """Build a pending session for ``plan``.
+
+    Args:
+        plan: Tranche plan to materialise.
+        currency: ISO-4217 currency code for the session.
+
+    Returns:
+        A session whose tranches are all pending and carry no orders yet.
+    """
+    return SplitSession(
+        amount_paise=plan.amount_paise,
+        tranche_paise=plan.tranche_paise,
+        currency=currency,
+        tranches=[
+            Tranche(index=index, amount_paise=amount)
+            for index, amount in enumerate(plan.amounts_paise)
+        ],
     )

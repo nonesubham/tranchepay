@@ -7,80 +7,20 @@ from threading import Barrier
 
 import pytest
 
-from tests.fakes import FakeRazorpayClient
+from tests.helpers import SplitRun
 from tranchepay import (
     AmountMismatchError,
     InMemorySessionStore,
     OrderResult,
-    PaymentComposer,
     PaymentMode,
     SessionNotFoundError,
     SessionStateError,
     SessionStatus,
-    SplitSession,
     TrancheStatus,
     VerificationError,
 )
 
 CEILING = 1_000
-
-
-class SplitRun:
-    """Test helper that pays tranches and verifies them, keeping the ids together."""
-
-    def __init__(self, composer: PaymentComposer, client: FakeRazorpayClient) -> None:
-        self.composer = composer
-        self.client = client
-        self.session_id: str | None = None
-
-    def start(self, amount_paise: int, **kwargs: object) -> OrderResult:
-        first = self.composer.create_order(amount_paise, mode=PaymentMode.SPLIT, **kwargs)  # type: ignore[arg-type]
-        self.session_id = first.session_id
-        return first
-
-    def sign(
-        self,
-        order: OrderResult,
-        payment_id: str,
-        *,
-        amount: int | None = None,
-        status: str = "captured",
-    ) -> str:
-        self.client.add_payment(
-            payment_id,
-            order.amount_paise if amount is None else amount,
-            status=status,
-            order_id=order.order_id,
-        )
-        return self.client.sign(order.order_id, payment_id)
-
-    def verify(
-        self,
-        order: OrderResult,
-        payment_id: str,
-        *,
-        amount: int | None = None,
-        status: str = "captured",
-        signature: str | None = None,
-    ) -> OrderResult | None:
-        assert self.session_id is not None
-        if signature is None:
-            signature = self.sign(order, payment_id, amount=amount, status=status)
-        return self.composer.verify_and_advance(
-            self.session_id, order.order_id, payment_id, signature
-        )
-
-    def session(self) -> SplitSession:
-        assert self.session_id is not None
-        session = self.composer.store.get(self.session_id)
-        assert session is not None
-        return session
-
-
-@pytest.fixture
-def run(split_composer: PaymentComposer, fake_client: FakeRazorpayClient) -> SplitRun:
-    """A helper wired to the small-ceiling composer and the fake client."""
-    return SplitRun(split_composer, fake_client)
 
 
 class TestStartingASession:
@@ -310,4 +250,3 @@ class TestRejections:
             run.composer.verify_and_advance(
                 first.session_id or "", third.order_id, "pay_3", signature
             )
-

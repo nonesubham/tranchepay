@@ -1,65 +1,39 @@
 """The split state machine: sequential tranches, resumable and idempotent.
 
-State transitions are keyed on ``(session_id, tranche_index)``. Each transition
-is guarded by a per-session lock and re-reads the session inside that lock, so a
-double-submitted verification or two concurrent callbacks advance a session at
-most once: the replay returns the same next order instead of creating another.
+Transitions are keyed on ``(session_id, tranche_index)``. Each one runs under the
+session's process-global lock (see :mod:`tranchepay.session_locks`) and re-reads
+the session inside it, so a double-submitted verification or two concurrent
+callbacks advance a session at most once: the replay returns the same next order
+instead of creating another.
 
-The lock is per :class:`SplitFlow` (i.e. per composer) and therefore protects a
-single process. Cross-process safety is the store adapter's job; see
-:mod:`tranchepay.store`.
+The flow owns no state beyond its collaborators - the session lives in the store,
+so a crashed process can pick the session up again with
+:meth:`SplitFlow.resume`.
 """
 
 from __future__ import annotations
 
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from typing import Any
-from weakref import WeakValueDictionary
 
 from .enums import PaymentMode, SessionStatus, TrancheStatus
-from .exceptions import (
-    AmountMismatchError,
-    SessionNotFoundError,
-    SessionStateError,
-    VerificationError,
-)
-from .models import DEFAULT_CURRENCY, OrderResult, SplitConfig, SplitSession, Tranche
+from .exceptions import SessionStateError
+from .models import DEFAULT_CURRENCY, OrderResult, SplitConfig, SplitSession
 from .money import require_paise
-from .orders import create_razorpay_order, order_result
+from .orders import (
+    create_razorpay_order,
+    create_tranche_order,
+    ensure_tranche_order,
+    order_result,
+)
 from .protocol import RazorpayClientProtocol
-from .split import plan_tranches
-from .store import SessionStore
+from .session_locks import hold
+from .split import build_session, plan_tranches
+from .split_recovery import SplitRecovery
+from .store import SessionStore, load_session
+from .verification import require_captured_payment, verify_checkout_signature
 
 __all__ = ["SplitFlow"]
-
-CAPTURED = "captured"
-PAYABLE_ORDER_STATUSES = frozenset({"created", "attempted"})
-
-
-class _SessionLocks:
-    """Per-session re-entrant locks, held only while a transition runs.
-
-    Locks live in a weak-value map: while one thread holds a session's lock it
-    also holds a strong reference, so concurrent callers are guaranteed to see
-    the same lock object, and idle locks are collected afterwards.
-    """
-
-    def __init__(self) -> None:
-        self._guard = threading.Lock()
-        self._locks: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
-
-    @contextmanager
-    def hold(self, session_id: str) -> Iterator[None]:
-        """Serialise transitions for ``session_id`` within this process."""
-        with self._guard:
-            lock = self._locks.get(session_id)
-            if lock is None:
-                lock = threading.RLock()
-                self._locks[session_id] = lock
-        with lock:
-            yield
 
 
 class SplitFlow:
@@ -84,9 +58,8 @@ class SplitFlow:
         self._store = store
         self._config = config if config is not None else SplitConfig()
         self._currency = currency
-        self._locks = _SessionLocks()
+        self._recovery_helper: SplitRecovery | None = None
 
-    # ------------------------------------------------------------------ public
     def start(
         self,
         amount_paise: int,
@@ -109,8 +82,8 @@ class SplitFlow:
 
         Returns:
             The first tranche order, carrying ``session_id`` and
-            ``tranche_index``. Subsequent tranche orders carry neither receipt
-            nor notes; pass them on the order created here.
+            ``tranche_index``. Later tranche orders carry neither receipt nor
+            notes; pass them on the order created here.
 
         Raises:
             TypeError: If ``amount_paise`` is not an ``int``.
@@ -133,15 +106,7 @@ class SplitFlow:
                 receipt=receipt,
             )
 
-        session = SplitSession(
-            amount_paise=amount_paise,
-            tranche_paise=plan.tranche_paise,
-            currency=order_currency,
-            tranches=[
-                Tranche(index=index, amount_paise=amount)
-                for index, amount in enumerate(plan.amounts_paise)
-            ],
-        )
+        session = build_session(plan, currency=order_currency)
         raw = create_razorpay_order(
             self._client,
             plan.amounts_paise[0],
@@ -149,7 +114,7 @@ class SplitFlow:
             receipt=receipt,
             notes=notes,
         )
-        result = order_result(
+        first = order_result(
             raw,
             mode=PaymentMode.SPLIT,
             amount_paise=plan.amounts_paise[0],
@@ -158,9 +123,9 @@ class SplitFlow:
             session_id=session.session_id,
             tranche_index=0,
         )
-        session.tranches[0].order_id = result.order_id
+        session.tranches[0].order_id = first.order_id
         self._store.save(session)
-        return result
+        return first
 
     def verify_and_advance(
         self,
@@ -180,8 +145,8 @@ class SplitFlow:
 
         Safe to call twice: a replay of an already-paid tranche verifies the
         signature again, skips the state change, and returns the current pending
-        tranche's order (or ``None`` when the session is complete) - reconstructed
-        from the session, with no extra API call and no new order.
+        tranche's order (or ``None`` when the session is complete), reconstructed
+        from the session with no extra API call and no new order.
 
         Args:
             session_id: Session returned by the first tranche order.
@@ -199,13 +164,12 @@ class SplitFlow:
             AmountMismatchError: If the captured amount is not the tranche amount.
             SessionNotFoundError: If the session id is unknown to the store.
             SessionStateError: If the order belongs to another session, the
-                tranche is not the current pending tranche, or the session is
-                already closed.
+                tranche is not the current pending one, or the session is closed.
         """
-        self._verify_signature(order_id, payment_id, signature)
+        verify_checkout_signature(self._client, order_id, payment_id, signature)
 
-        with self._locks.hold(session_id):
-            session = self._load(session_id)
+        with hold(session_id):
+            session = load_session(self._store, session_id)
             tranche = session.tranche_for_order(order_id)
             if tranche is None:
                 msg = f"order {order_id} does not belong to session {session_id}"
@@ -223,14 +187,14 @@ class SplitFlow:
 
             pending = session.next_pending_tranche()
             if pending is None or pending.index != tranche.index:
+                current = pending.index if pending is not None else "none"
                 msg = (
                     f"tranche {tranche.index} of session {session_id} is "
-                    f"{tranche.status.value}; only tranche "
-                    f"{pending.index if pending else 'none'} can be advanced"
+                    f"{tranche.status.value}; only tranche {current} can be advanced"
                 )
                 raise SessionStateError(msg)
 
-            self._require_captured(payment_id, tranche)
+            require_captured_payment(self._client, payment_id, tranche)
             tranche.status = TrancheStatus.PAID
             tranche.payment_id = payment_id
             session.status = (
@@ -244,101 +208,57 @@ class SplitFlow:
             if next_tranche is None:  # pragma: no cover - unreachable while not fully paid
                 msg = f"session {session_id} has no pending tranche to collect"
                 raise SessionStateError(msg)
-            return self._create_order_for(session, next_tranche.index)
+            return create_tranche_order(self._client, self._store, session, next_tranche.index)
 
-    # ----------------------------------------------------------------- internal
-    def _load(self, session_id: str) -> SplitSession:
-        """Return the stored session or raise :class:`SessionNotFoundError`."""
-        session = self._store.get(session_id)
-        if session is None:
-            msg = f"unknown split session: {session_id}"
-            raise SessionNotFoundError(msg)
-        return session
+    def abort_and_refund(self, session_id: str) -> SplitSession:
+        """Refund every paid tranche of a session and mark the session aborted.
+
+        Idempotent: only tranches still in the ``PAID`` state are refunded, so no
+        tranche is ever refunded twice.
+
+        Args:
+            session_id: Session to abort.
+
+        Returns:
+            The aborted session as persisted.
+
+        Raises:
+            SessionNotFoundError: If the session id is unknown to the store.
+            SessionStateError: If the session is already ``COMPLETE``.
+            PartialPaymentError: If a refund failed; call again to finish. See
+                :class:`~tranchepay.split_recovery.SplitRecovery`.
+        """
+        return self._recovery().abort_and_refund(session_id)
+
+    def resume(self, session_id: str) -> OrderResult:
+        """Return a payable order for the session's pending tranche.
+
+        Fetches the pending tranche's order and replaces it when it is no longer
+        payable - for example after expiry - so an interrupted session can be
+        resumed without re-creating it from scratch.
+
+        Args:
+            session_id: Session to resume.
+
+        Returns:
+            The order to send to checkout.
+
+        Raises:
+            SessionNotFoundError: If the session id is unknown to the store.
+            SessionStateError: If the session is closed, has no pending tranche, or
+                the pending order was already paid.
+        """
+        return self._recovery().resume(session_id)
+
+    def _recovery(self) -> SplitRecovery:
+        """Return the refund/resume helper, building it on first use."""
+        if self._recovery_helper is None:
+            self._recovery_helper = SplitRecovery(self._client, self._store)
+        return self._recovery_helper
 
     def _pending_order(self, session: SplitSession) -> OrderResult | None:
         """Return the order for the current pending tranche, if there is one."""
         pending = session.next_pending_tranche()
         if pending is None:
             return None
-        return self._order_for(session, pending.index)
-
-    def _order_for(self, session: SplitSession, index: int) -> OrderResult:
-        """Return the order for ``index``, creating the Razorpay order if needed."""
-        tranche = session.tranches[index]
-        if tranche.order_id is None:
-            return self._create_order_for(session, index)
-        raw = {
-            "id": tranche.order_id,
-            "amount": tranche.amount_paise,
-            "currency": session.currency,
-            "payment_capture": 1,
-            "status": "created",
-        }
-        return order_result(
-            raw,
-            mode=PaymentMode.SPLIT,
-            amount_paise=tranche.amount_paise,
-            currency_default=session.currency,
-            session_id=session.session_id,
-            tranche_index=index,
-        )
-
-    def _create_order_for(self, session: SplitSession, index: int) -> OrderResult:
-        """Create the Razorpay order for ``index`` and persist it on the session."""
-        tranche = session.tranches[index]
-        raw = create_razorpay_order(self._client, tranche.amount_paise, currency=session.currency)
-        result = order_result(
-            raw,
-            mode=PaymentMode.SPLIT,
-            amount_paise=tranche.amount_paise,
-            currency_default=session.currency,
-            session_id=session.session_id,
-            tranche_index=index,
-        )
-        tranche.order_id = result.order_id
-        self._store.update(session.touched())
-        return result
-
-    def _verify_signature(self, order_id: str, payment_id: str, signature: str) -> None:
-        """Delegate signature verification to Razorpay's own implementation."""
-        parameters = {
-            "razorpay_order_id": order_id,
-            "razorpay_payment_id": payment_id,
-            "razorpay_signature": signature,
-        }
-        try:
-            verified = self._client.utility.verify_payment_signature(parameters)
-        except Exception as exc:
-            msg = f"signature verification failed for order {order_id} / payment {payment_id}"
-            raise VerificationError(msg) from exc
-        if not verified:
-            msg = f"signature verification failed for order {order_id} / payment {payment_id}"
-            raise VerificationError(msg)
-
-    def _require_captured(self, payment_id: str, tranche: Tranche) -> None:
-        """Assert the payment is captured for exactly the tranche amount.
-
-        Raises:
-            VerificationError: If the payment cannot be fetched or is not
-                captured.
-            AmountMismatchError: If the captured amount is not the tranche amount.
-        """
-        try:
-            payment = self._client.payment.fetch(payment_id)
-        except Exception as exc:
-            msg = f"could not fetch payment {payment_id} for tranche {tranche.index}"
-            raise VerificationError(msg) from exc
-        status = payment.get("status")
-        if status != CAPTURED:
-            msg = (
-                f"payment {payment_id} for tranche {tranche.index} is {status!r}, "
-                f"expected {CAPTURED!r}"
-            )
-            raise VerificationError(msg)
-        amount = payment.get("amount")
-        if amount != tranche.amount_paise:
-            msg = (
-                f"payment {payment_id} captured {amount!r} paise but tranche "
-                f"{tranche.index} expects {tranche.amount_paise} paise"
-            )
-            raise AmountMismatchError(msg)
+        return ensure_tranche_order(self._client, self._store, session, pending.index)

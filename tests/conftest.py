@@ -11,6 +11,7 @@ from decimal import Decimal
 import pytest
 
 from tests.fakes import FakeRazorpayClient
+from tests.helpers import SplitRun
 from tranchepay import (
     ChargesConfig,
     InMemorySessionStore,
@@ -80,3 +81,9 @@ def split_composer(
         store=split_store,
         currency="INR",
     )
+
+
+@pytest.fixture
+def run(split_composer: PaymentComposer, fake_client: FakeRazorpayClient) -> SplitRun:
+    """A helper wired to the small-ceiling composer and the fake client."""
+    return SplitRun(split_composer, fake_client)

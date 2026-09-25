@@ -1,7 +1,9 @@
-"""Order creation and response wrapping shared by the composer and the flow.
+"""Order creation and per-tranche bookkeeping shared by the composer and the flow.
 
-Everything that talks to ``client.order`` lives here so that the payload shape
-(``payment_capture=1``, integer paise, optional receipt/notes) is defined once.
+Everything that talks to ``client.order`` lives here, so the payload shape
+(``payment_capture=1``, integer paise, optional receipt/notes) is defined once,
+as is the rule that a tranche order is placed before the session that points at
+it is written.
 """
 
 from __future__ import annotations
@@ -10,11 +12,21 @@ from collections.abc import Mapping
 from typing import Any
 
 from .enums import PaymentMode
-from .exceptions import PaymentComposeError
-from .models import OrderResult
+from .exceptions import PaymentComposeError, SessionStateError
+from .models import OrderResult, SplitSession
 from .protocol import RazorpayClientProtocol
+from .store import SessionStore
 
-__all__ = ["create_razorpay_order", "order_result"]
+__all__ = [
+    "create_razorpay_order",
+    "create_tranche_order",
+    "ensure_tranche_order",
+    "order_is_payable",
+    "order_result",
+    "tranche_order_result",
+]
+
+PAYABLE_ORDER_STATUSES = frozenset({"created", "attempted"})
 
 
 def create_razorpay_order(
@@ -101,3 +113,115 @@ def order_result(
         receipt=str(raw_receipt) if raw_receipt is not None else receipt,
         raw=dict(raw),
     )
+
+
+def tranche_order_result(session: SplitSession, index: int) -> OrderResult:
+    """Wrap the order already recorded on a tranche, without calling the API.
+
+    Args:
+        session: Session holding the tranche.
+        index: Zero-based tranche position.
+
+    Returns:
+        The order for that tranche.
+
+    Raises:
+        PaymentComposeError: If the tranche has no order yet.
+    """
+    tranche = session.tranches[index]
+    if tranche.order_id is None:
+        msg = f"tranche {index} of session {session.session_id} has no order yet"
+        raise PaymentComposeError(msg)
+    raw = {
+        "id": tranche.order_id,
+        "amount": tranche.amount_paise,
+        "currency": session.currency,
+        "payment_capture": 1,
+        "status": "created",
+    }
+    return order_result(
+        raw,
+        mode=PaymentMode.SPLIT,
+        amount_paise=tranche.amount_paise,
+        currency_default=session.currency,
+        session_id=session.session_id,
+        tranche_index=index,
+    )
+
+
+def create_tranche_order(
+    client: RazorpayClientProtocol,
+    store: SessionStore,
+    session: SplitSession,
+    index: int,
+) -> OrderResult:
+    """Create the Razorpay order for a tranche and record it on the session.
+
+    The order is placed before the session is written, so a failure leaves the
+    session's pending tranche without an order - which :func:`ensure_tranche_order`
+    retries - rather than pointing at an order that does not exist.
+
+    Args:
+        client: Configured Razorpay client.
+        store: Store holding the session.
+        session: Session to update.
+        index: Zero-based tranche position.
+
+    Returns:
+        The newly created order.
+    """
+    tranche = session.tranches[index]
+    raw = create_razorpay_order(client, tranche.amount_paise, currency=session.currency)
+    result = order_result(
+        raw,
+        mode=PaymentMode.SPLIT,
+        amount_paise=tranche.amount_paise,
+        currency_default=session.currency,
+        session_id=session.session_id,
+        tranche_index=index,
+    )
+    tranche.order_id = result.order_id
+    store.update(session.touched())
+    return result
+
+
+def ensure_tranche_order(
+    client: RazorpayClientProtocol,
+    store: SessionStore,
+    session: SplitSession,
+    index: int,
+) -> OrderResult:
+    """Return the tranche's order, creating it if the session has none yet."""
+    if session.tranches[index].order_id is None:
+        return create_tranche_order(client, store, session, index)
+    return tranche_order_result(session, index)
+
+
+def order_is_payable(client: RazorpayClientProtocol, order_id: str) -> bool:
+    """Whether checkout can still settle ``order_id``.
+
+    Args:
+        client: Configured Razorpay client.
+        order_id: Order to inspect.
+
+    Returns:
+        ``True`` when the order's status is ``created`` or ``attempted``.
+
+    Raises:
+        SessionStateError: If the order cannot be fetched, or has already been
+            paid - paying a replacement would risk a double charge, so the caller
+            is told to verify the existing payment instead.
+    """
+    try:
+        order = client.order.fetch(order_id)
+    except Exception as exc:
+        msg = f"could not fetch order {order_id} to check whether it is still payable"
+        raise SessionStateError(msg) from exc
+    status = order.get("status")
+    if status == "paid":
+        msg = (
+            f"order {order_id} is already paid; verify that payment with "
+            "verify_and_advance instead of creating a replacement order"
+        )
+        raise SessionStateError(msg)
+    return status in PAYABLE_ORDER_STATUSES

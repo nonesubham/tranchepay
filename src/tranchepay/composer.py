@@ -17,6 +17,7 @@ from .models import (
     ChargesConfig,
     OrderResult,
     SplitConfig,
+    SplitSession,
 )
 from .money import gross_up, require_paise
 from .orders import create_razorpay_order, order_result
@@ -239,6 +240,46 @@ class PaymentComposer:
                 order, or the session is already closed.
         """
         return self._split_flow().verify_and_advance(session_id, order_id, payment_id, signature)
+
+    def abort_and_refund(self, session_id: str) -> SplitSession:
+        """Refund every paid tranche of a session and mark it aborted.
+
+        Safe to call again: only tranches still in the ``PAID`` state are
+        refunded, so no tranche is ever refunded twice.
+
+        Args:
+            session_id: Session to abort.
+
+        Returns:
+            The aborted session as persisted.
+
+        Raises:
+            SessionNotFoundError: If the session id is unknown to the store.
+            SessionStateError: If the session is already ``COMPLETE``.
+            PartialPaymentError: If a refund failed; call again to finish. See
+                :meth:`~tranchepay.split_flow.SplitFlow.abort_and_refund`.
+        """
+        return self._split_flow().abort_and_refund(session_id)
+
+    def resume(self, session_id: str) -> OrderResult:
+        """Return a payable order for the session's pending tranche.
+
+        Fetches the pending tranche's order and replaces it when it is no longer
+        payable (for example after expiry), so an interrupted session can be
+        resumed without re-creating the whole thing.
+
+        Args:
+            session_id: Session to resume.
+
+        Returns:
+            The order to send to checkout.
+
+        Raises:
+            SessionNotFoundError: If the session id is unknown to the store.
+            SessionStateError: If the session is closed, or the pending order was
+                already paid (verify that payment instead of paying again).
+        """
+        return self._split_flow().resume(session_id)
 
     def _split_flow(self) -> SplitFlow:
         """Return the split flow for this composer, building it on first use."""
