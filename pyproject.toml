@@ -37,8 +37,8 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/tranchepay/tranchepay"
-Changelog = "https://github.com/tranchepay/tranchepay/releases"
+Repository = "https://github.com/nonesubham/tranchepay"
+Changelog = "https://github.com/nonesubham/tranchepay/releases"
 
 [tool.setuptools.dynamic]
 version = { attr = "tranchepay.__version__" }

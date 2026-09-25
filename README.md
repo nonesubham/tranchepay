@@ -4,7 +4,7 @@ Compose payment modes around the Razorpay client you already own: charge the exa
 amount, gross the amount up so the customer covers the gateway fee, or collect one
 large amount as sequential tranches of at most ₹1,999.
 
-[![CI](https://github.com/tranchepay/tranchepay/actions/workflows/ci.yml/badge.svg)](https://github.com/tranchepay/tranchepay/actions/workflows/ci.yml)
+[![CI](https://github.com/nonesubham/tranchepay/actions/workflows/ci.yml/badge.svg)](https://github.com/nonesubham/tranchepay/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
