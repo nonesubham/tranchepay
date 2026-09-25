@@ -1,9 +1,9 @@
 """Live integration tests against the Razorpay TEST (sandbox) API.
 
-These tests are **opt-in** and hit the real network. They are deselected by the
-default ``pytest`` run (``-m "not integration"`` in ``addopts``) and are skipped
-when credentials are missing, so contributors without a Razorpay account are
-never blocked. Run them with ``./run_integration.sh`` or:
+These tests are **opt-in** and hit the real network. They are skipped unless
+credentials are present, so contributors without a Razorpay account are never
+blocked, and CI runs ``pytest -m "not integration"`` so it never needs secrets.
+Run them with ``./run_integration.sh`` or:
 
     set -a; . ./.env; set +a
     pytest tests/test_integration_razorpay.py -v -m integration
