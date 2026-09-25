@@ -147,6 +147,11 @@ jobs:
     permissions:
       contents: write  # only this job may write to the repository
     steps:
+      # Required: `gh release create` shells out to git for the tag/remote
+      # context, so this job needs a checkout even though it only uploads
+      # artefacts.
+      - uses: actions/checkout@v4
+
       - name: Download dist artefacts
         uses: actions/download-artifact@v4
         with:
