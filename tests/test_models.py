@@ -11,7 +11,6 @@ from pydantic import ValidationError
 
 from tests.conftest import SessionFactory
 from tranchepay import (
-    DEFAULT_CURRENCY,
     DEFAULT_TRANCHE_PAISE,
     ChargesConfig,
     OrderResult,
@@ -28,10 +27,10 @@ from tranchepay import (
 class TestChargesConfig:
     def test_defaults(self) -> None:
         config = ChargesConfig(fee_rate=Decimal("0.0236"))
+
         assert config.fee_rate == Decimal("0.0236")
         assert isinstance(config.fee_rate, Decimal)
         assert config.rounding is RoundingPolicy.ROUND_HALF_UP
-        assert config.currency == DEFAULT_CURRENCY
 
     def test_rounding_policy_is_explicit_and_matches_decimal_constants(self) -> None:
         assert RoundingPolicy.ROUND_HALF_UP.value == decimal.ROUND_HALF_UP

@@ -11,6 +11,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from .models import DEFAULT_TRANCHE_PAISE
+from .money import require_paise
 
 __all__ = ["SplitPlan", "plan_tranches"]
 
@@ -53,17 +54,6 @@ class SplitPlan(BaseModel):
         return sum(self.amounts_paise)
 
 
-def _require_paise(value: int, name: str) -> int:
-    """Return ``value`` if it is a genuine positive int number of paise."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        msg = f"{name} must be an int number of paise, got {type(value).__name__}"
-        raise TypeError(msg)
-    if value <= 0:
-        msg = f"{name} must be > 0, got {value}"
-        raise ValueError(msg)
-    return value
-
-
 def plan_tranches(amount_paise: int, tranche_paise: int = DEFAULT_TRANCHE_PAISE) -> SplitPlan:
     """Split ``amount_paise`` into tranches of at most ``tranche_paise``.
 
@@ -82,8 +72,8 @@ def plan_tranches(amount_paise: int, tranche_paise: int = DEFAULT_TRANCHE_PAISE)
             never leak into money arithmetic.
         ValueError: If either argument is zero or negative.
     """
-    _require_paise(amount_paise, "amount_paise")
-    _require_paise(tranche_paise, "tranche_paise")
+    require_paise(amount_paise, "amount_paise")
+    require_paise(tranche_paise, "tranche_paise")
 
     full_tranches, remainder = divmod(amount_paise, tranche_paise)
     amounts = [tranche_paise] * full_tranches

@@ -6,12 +6,16 @@ Nothing here touches the network: every test runs against in-process doubles.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from decimal import Decimal
 
 import pytest
 
-from tranchepay import SplitSession, Tranche, TrancheStatus
+from tests.fakes import FakeRazorpayClient
+from tranchepay import ChargesConfig, PaymentComposer, SplitSession, Tranche, TrancheStatus
 
 SessionFactory = Callable[..., SplitSession]
+
+TEST_SECRET = "test_secret"
 
 
 @pytest.fixture
@@ -36,4 +40,16 @@ def make_session() -> SessionFactory:
     return factory
 
 
-__all__ = ["SessionFactory", "Tranche", "TrancheStatus"]
+__all__ = ["TEST_SECRET", "SessionFactory", "Tranche", "TrancheStatus"]
+
+
+@pytest.fixture
+def fake_client() -> FakeRazorpayClient:
+    """A fresh in-process Razorpay stand-in with no network access."""
+    return FakeRazorpayClient(secret=TEST_SECRET)
+
+
+@pytest.fixture
+def composer(fake_client: FakeRazorpayClient) -> PaymentComposer:
+    """A composer wired to the fake client and the default configs."""
+    return PaymentComposer(fake_client, charges=ChargesConfig(fee_rate=Decimal("0.0236")))
