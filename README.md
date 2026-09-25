@@ -18,6 +18,12 @@ large amount as sequential tranches of at most ₹1,999.
 - **Resumable splits.** Sessions are plain pydantic models in a pluggable store, so a
   half-finished split survives a deploy.
 
+## Documentation
+
+The full guide - initialization, all three modes, abort/resume, webhooks, the
+exception hierarchy, custom session stores, and compliance - lives in
+[`DOCUMENTATION.md`](DOCUMENTATION.md). This README is the quick tour.
+
 ## Install
 
 ```bash
