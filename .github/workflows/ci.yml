@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
   pull_request:
 
 concurrency:
@@ -45,3 +46,41 @@ jobs:
 
       - name: Tests
         run: pytest -m "not integration" --cov=tranchepay --cov-report=term-missing
+
+  publish:
+    name: Build & Publish to PyPI (tag)
+    needs: check
+    # Only a version tag publishes. A merge to main runs the checks above and
+    # stops there, so no commit can ship a release by accident.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # MUST be enabled for Trusted Publishing (OIDC)
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify the tag matches __version__
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(python -c "import ast,pathlib;t=ast.parse(pathlib.Path('src/tranchepay/__init__.py').read_text());print(ast.literal_eval(next(n.value for n in t.body if isinstance(n,ast.Assign) and any(getattr(x,'id',None)=='__version__' for x in n.targets))))")
+          if [ "$tag" != "$version" ]; then
+            echo "tag v$tag does not match __version__ $version" >&2
+            exit 1
+          fi
+          echo "releasing tranchepay $version"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
