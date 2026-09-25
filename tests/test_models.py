@@ -101,6 +101,20 @@ class TestSplitSession:
         assert session.total_paid_paise() == 1_000
         assert session.is_terminal() is False
 
+    def test_total_tranches_is_derived_from_the_parts(self, make_session: SessionFactory) -> None:
+        session = make_session((1_000, 1_000, 500))
+
+        assert session.total_tranches == 3
+        assert session.total_tranches == len(session.tranches)
+        assert session.model_dump()["total_tranches"] == 3
+
+        restored = SplitSession.model_validate_json(session.model_dump_json())
+        assert restored.total_tranches == 3
+        assert restored == session
+
+    def test_total_tranches_for_a_single_tranche(self, make_session: SessionFactory) -> None:
+        assert make_session((900,)).total_tranches == 1
+
     @pytest.mark.parametrize("status", [SessionStatus.COMPLETE, SessionStatus.ABORTED])
     def test_terminal_statuses(self, make_session: SessionFactory, status: SessionStatus) -> None:
         assert make_session(status=status).is_terminal() is True

@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import math
 import pathlib
 
 import pytest
 
-from tranchepay import DEFAULT_TRANCHE_PAISE, SplitConfig, SplitPlan, plan_tranches
+from tranchepay import (
+    DEFAULT_TRANCHE_PAISE,
+    SplitConfig,
+    SplitPlan,
+    estimate_tranche_count,
+    plan_tranches,
+)
 
 SMALL = 1_000
 
@@ -63,6 +70,54 @@ def test_default_ceiling_is_used_when_omitted() -> None:
 
     assert plan.tranche_paise == DEFAULT_TRANCHE_PAISE
     assert plan.amounts_paise == (DEFAULT_TRANCHE_PAISE, DEFAULT_TRANCHE_PAISE, 100_200)
+
+
+class TestEstimateTrancheCount:
+    """The pre-session estimate: pure arithmetic, no client, no I/O."""
+
+    def test_amount_below_the_ceiling_is_one_tranche(self) -> None:
+        assert estimate_tranche_count(600, SMALL) == 1
+
+    def test_amount_equal_to_the_ceiling_is_one_tranche(self) -> None:
+        assert estimate_tranche_count(SMALL, SMALL) == 1
+
+    @pytest.mark.parametrize(
+        ("amount_paise", "expected"),
+        [
+            (SMALL * 2, 2),
+            (SMALL * 5, 5),
+            (SMALL * 2 + 500, 3),
+            (SMALL * 2 + 1, 3),
+        ],
+    )
+    def test_exact_multiples_and_remainders(self, amount_paise: int, expected: int) -> None:
+        assert estimate_tranche_count(amount_paise, SMALL) == expected
+
+    def test_default_ceiling_is_used_when_omitted(self) -> None:
+        assert estimate_tranche_count(500_000) == 3
+        assert estimate_tranche_count(DEFAULT_TRANCHE_PAISE * 2) == 2
+
+    @pytest.mark.parametrize("amount_paise", [0, -1, -SMALL])
+    def test_non_positive_amounts_raise(self, amount_paise: int) -> None:
+        with pytest.raises(ValueError, match="amount_paise must be > 0"):
+            estimate_tranche_count(amount_paise, SMALL)
+
+    @pytest.mark.parametrize("tranche_paise", [0, -1])
+    def test_non_positive_ceilings_raise(self, tranche_paise: int) -> None:
+        with pytest.raises(ValueError, match="tranche_paise must be > 0"):
+            estimate_tranche_count(SMALL, tranche_paise)
+
+    @pytest.mark.parametrize("bad", [1_000.5, "1000"])
+    def test_floats_and_strings_are_rejected_outright(self, bad: object) -> None:
+        with pytest.raises(TypeError, match="must be an int number of paise"):
+            estimate_tranche_count(bad, SMALL)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("amount_paise", [1, 999, SMALL, SMALL + 1, 10_500, 500_000])
+    def test_agrees_with_the_engine_and_with_ceil(self, amount_paise: int) -> None:
+        expected = plan_tranches(amount_paise, SMALL).tranche_count
+
+        assert estimate_tranche_count(amount_paise, SMALL) == expected
+        assert estimate_tranche_count(amount_paise, SMALL) == math.ceil(amount_paise / SMALL)
 
 
 def test_plan_is_frozen_and_serializable() -> None:

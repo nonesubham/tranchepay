@@ -88,7 +88,7 @@ client = razorpay.Client(auth=("rzp_test_xxxxxxxxxxxx", "your_key_secret"))
 composer = PaymentComposer(
     client,
     charges=ChargesConfig(fee_rate=Decimal("0.0236")),  # only needed for WITH_CHARGES
-    split=SplitConfig(tranche_paise=199_900),           # only needed for SPLIT
+    split=SplitConfig(tranche_paise=199_900),  # only needed for SPLIT
 )
 
 composer.client is client  # True - the same object you passed in
@@ -100,7 +100,7 @@ composer.client is client  # True - the same object you passed in
 class PaymentComposer:
     def __init__(
         self,
-        client,                 # configured razorpay.Client (or anything exposing order/payment/utility)
+        client,  # configured razorpay.Client (or anything exposing order/payment/utility)
         *,
         charges: ChargesConfig | None = None,
         split: SplitConfig | None = None,
@@ -128,12 +128,12 @@ All three modes go through one method:
 
 ```python
 def create_order(
-    amount_paise: int,                              # int, positive
+    amount_paise: int,  # int, positive
     *,
     mode: PaymentMode = PaymentMode.EXACT,
-    receipt: str | None = None,                     # echoed back by Razorpay
-    notes: Mapping[str, Any] | None = None,         # echoed back by Razorpay
-    currency: str | None = None,                    # per-order override
+    receipt: str | None = None,  # echoed back by Razorpay
+    notes: Mapping[str, Any] | None = None,  # echoed back by Razorpay
+    currency: str | None = None,  # per-order override
 ) -> OrderResult: ...
 ```
 
@@ -150,10 +150,10 @@ from tranchepay import PaymentMode
 
 order = composer.create_order(50_000, mode=PaymentMode.EXACT)  # 50_000 paise = ₹500.00
 
-order.order_id      # "order_XXXXXXXXXXXXXX"
+order.order_id  # "order_XXXXXXXXXXXXXX"
 order.amount_paise  # 50_000 - exactly what the customer pays
-order.net_paise     # None - nothing was grossed up
-order.raw           # untouched Razorpay response, ready for Checkout
+order.net_paise  # None - nothing was grossed up
+order.raw  # untouched Razorpay response, ready for Checkout
 ```
 
 Hand `order.raw` to Razorpay Checkout, or read `order.order_id` if your frontend
@@ -180,16 +180,16 @@ from tranchepay import ChargesConfig, PaymentComposer, PaymentMode, RoundingPoli
 composer = PaymentComposer(
     client,
     charges=ChargesConfig(
-        fee_rate=Decimal("0.0236"),              # 2.36%, as a Decimal - never a float
-        rounding=RoundingPolicy.ROUND_HALF_UP,   # the default
+        fee_rate=Decimal("0.0236"),  # 2.36%, as a Decimal - never a float
+        rounding=RoundingPolicy.ROUND_HALF_UP,  # the default
     ),
 )
 
 order = composer.create_order(50_000, mode=PaymentMode.WITH_CHARGES)
 
 order.amount_paise  # 51_209 - what the customer is charged
-order.net_paise     # 50_000 - what the merchant keeps
-order.fee_paise     #  1_209 - the fee, paid by the customer instead of the merchant
+order.net_paise  # 50_000 - what the merchant keeps
+order.fee_paise  #  1_209 - the fee, paid by the customer instead of the merchant
 ```
 
 `fee_rate` is the gateway fee as a fraction of the **gross** amount and must satisfy
@@ -206,13 +206,13 @@ Which way that single rounding goes is explicit configuration, never implicit:
 ```python
 from tranchepay import RoundingPolicy
 
-RoundingPolicy.ROUND_HALF_UP     # default: nearest paisa, halves up
+RoundingPolicy.ROUND_HALF_UP  # default: nearest paisa, halves up
 RoundingPolicy.ROUND_HALF_DOWN
 RoundingPolicy.ROUND_HALF_EVEN
-RoundingPolicy.ROUND_UP          # customer covers the fee in full
-RoundingPolicy.ROUND_CEILING     # synonym of ROUND_UP for non-negative amounts
-RoundingPolicy.ROUND_DOWN        # customer is never overcharged
-RoundingPolicy.ROUND_FLOOR       # synonym of ROUND_DOWN for non-negative amounts
+RoundingPolicy.ROUND_UP  # customer covers the fee in full
+RoundingPolicy.ROUND_CEILING  # synonym of ROUND_UP for non-negative amounts
+RoundingPolicy.ROUND_DOWN  # customer is never overcharged
+RoundingPolicy.ROUND_FLOOR  # synonym of ROUND_DOWN for non-negative amounts
 ```
 
 Because the *total* is rounded, the merchant may net up to one paisa more or less
@@ -233,10 +233,10 @@ from decimal import Decimal
 
 from tranchepay import RoundingPolicy, gross_up
 
-gross_up(3, Decimal("0.6"), RoundingPolicy.ROUND_HALF_UP)    # 8
+gross_up(3, Decimal("0.6"), RoundingPolicy.ROUND_HALF_UP)  # 8
 gross_up(3, Decimal("0.6"), RoundingPolicy.ROUND_HALF_DOWN)  # 7
-gross_up(3, Decimal("0.6"), RoundingPolicy.ROUND_DOWN)       # 7
-gross_up(3, Decimal("0.6"), RoundingPolicy.ROUND_UP)         # 8
+gross_up(3, Decimal("0.6"), RoundingPolicy.ROUND_DOWN)  # 7
+gross_up(3, Decimal("0.6"), RoundingPolicy.ROUND_UP)  # 8
 ```
 
 Whatever the policy, the result is reported exactly: `order.amount_paise` is what
@@ -254,15 +254,44 @@ plus an optional remainder, which is omitted when it is zero.
 ```python
 from tranchepay import plan_tranches
 
-plan_tranches(450_000).amounts_paise   # (199_900, 199_900, 50_200)  -> ₹1,999 + ₹1,999 + ₹502
-plan_tranches(399_800).amounts_paise   # (199_900, 199_900)         -> exact multiple, no remainder
-plan_tranches(150_000).amounts_paise   # (150_000,)                 -> fits in one tranche
+plan_tranches(450_000).amounts_paise  # (199_900, 199_900, 50_200)  -> ₹1,999 + ₹1,999 + ₹502
+plan_tranches(399_800).amounts_paise  # (199_900, 199_900)         -> exact multiple, no remainder
+plan_tranches(150_000).amounts_paise  # (150_000,)                 -> fits in one tranche
 plan_tranches(150_000).requires_session  # False
 ```
 
 When the amount fits in a single tranche there is nothing to sequence, so **no
 session is created** and one ordinary order is returned for the full amount. Check
 `order.session_id is None` to detect this case.
+
+#### Estimating the number of tranches
+
+To tell the customer how many payments to expect *before* creating anything, use
+`estimate_tranche_count`. It is pure arithmetic — no order, no session, no API
+call — and it is the same math the split engine uses, so the promise and the plan
+can never disagree:
+
+```python
+from tranchepay import estimate_tranche_count
+
+estimate_tranche_count(450_000)  # 3 - the default ceiling (₹1,999)
+estimate_tranche_count(450_000, 50_000)  # 9 - a ₹500 ceiling
+estimate_tranche_count(150_000)  # 1 - fits in a single tranche
+```
+
+Pass the same ceiling your composer uses (`SplitConfig().tranche_paise`) so the
+estimate matches what will actually be created.
+
+Once the session exists, `session.total_tranches` carries the same number, so
+progress copy lines up with what you promised:
+
+```python
+first = composer.create_order(450_000, mode=PaymentMode.SPLIT)
+session = composer.store.get(first.session_id)
+
+session.total_tranches  # 3 - derived from the tranches actually stored
+f"Tranche {first.tranche_index + 1} of {session.total_tranches}"  # "Tranche 1 of 3"
+```
 
 **Starting a split.** Use `create_order` with `mode=PaymentMode.SPLIT`; it opens the
 session and returns the first tranche's order:
@@ -274,10 +303,10 @@ composer = PaymentComposer(client, split=SplitConfig(tranche_paise=199_900))
 
 first = composer.create_order(450_000, mode=PaymentMode.SPLIT, receipt="ord-1043")
 
-first.order_id      # tranche 1's order
+first.order_id  # tranche 1's order
 first.amount_paise  # 199_900
-first.session_id    # "3f1c...": save this; every later call needs it
-first.tranche_index # 0
+first.session_id  # "3f1c...": save this; every later call needs it
+first.tranche_index  # 0
 # Send first.raw to Razorpay Checkout.
 ```
 
@@ -313,9 +342,9 @@ finished; anything else is an order to send to checkout:
 
 ```python
 if next_order is None:
-    mark_order_fulfilled(session_id)          # every tranche captured
+    mark_order_fulfilled(session_id)  # every tranche captured
 else:
-    send_to_checkout(next_order.raw)          # next_order.tranche_index == 1, 2, ...
+    send_to_checkout(next_order.raw)  # next_order.tranche_index == 1, 2, ...
 ```
 
 Because the flow is keyed on `(session_id, tranche_index)` and re-reads the session
@@ -328,15 +357,16 @@ current pending order instead of creating another.
 ```python
 session = composer.store.get(session_id)
 
-session.status                 # PENDING | IN_PROGRESS | COMPLETE | ABORTED
-session.amount_paise           # 450_000 - the total being collected
-session.tranche_paise          # 199_900 - the configured ceiling
-session.tranches[0].status     # PENDING | PAID | FAILED | REFUNDED
+session.status  # PENDING | IN_PROGRESS | COMPLETE | ABORTED
+session.amount_paise  # 450_000 - the total being collected
+session.tranche_paise  # 199_900 - the configured ceiling
+session.total_tranches  # 3 - how many payments the session was split into
+session.tranches[0].status  # PENDING | PAID | FAILED | REFUNDED
 session.tranches[0].order_id
 session.tranches[0].payment_id
-session.total_paid_paise()     # sum of captured tranches
+session.total_paid_paise()  # sum of captured tranches
 session.is_fully_paid()
-session.model_dump_json()      # serialize it wherever you persist state
+session.model_dump_json()  # serialize it wherever you persist state
 ```
 
 ## Handling Partial Failures & Aborts
@@ -351,9 +381,9 @@ exactly the amount captured and marks the session `ABORTED`:
 ```python
 session = composer.abort_and_refund(first.session_id)
 
-session.status                    # SessionStatus.ABORTED
-session.total_paid_paise()        # 0 - paid tranches are now REFUNDED
-session.tranches[0].status        # TrancheStatus.REFUNDED
+session.status  # SessionStatus.ABORTED
+session.total_paid_paise()  # 0 - paid tranches are now REFUNDED
+session.tranches[0].status  # TrancheStatus.REFUNDED
 ```
 
 - Only tranches in the `PAID` state are refunded, and each is persisted as
@@ -375,7 +405,7 @@ otherwise a fresh replacement for the same amount, recorded on the session.
 ```python
 order = composer.resume(first.session_id)
 
-order.order_id      # the same order if still payable, else a new one
+order.order_id  # the same order if still payable, else a new one
 order.amount_paise  # the pending tranche's amount
 send_to_checkout(order.raw)
 ```
@@ -400,11 +430,12 @@ exception is chained as `__cause__`.
 ```python
 from tranchepay import VerificationError, verify_webhook
 
+
 @app.post("/razorpay/webhook")
 def razorpay_webhook():
-    raw_body = request.get_data(as_text=True)          # exactly as received, not re-serialized
+    raw_body = request.get_data(as_text=True)  # exactly as received, not re-serialized
     signature = request.headers["X-Razorpay-Signature"]
-    secret = settings.RAZORPAY_WEBHOOK_SECRET          # from the dashboard, not the API key secret
+    secret = settings.RAZORPAY_WEBHOOK_SECRET  # from the dashboard, not the API key secret
 
     try:
         verify_webhook(client, raw_body, signature, secret)
@@ -419,7 +450,7 @@ def razorpay_webhook():
 Signature:
 
 ```python
-def verify_webhook(client, body, signature, secret) -> bool: ...   # True on success
+def verify_webhook(client, body, signature, secret) -> bool: ...  # True on success
 ```
 
 Pass the body exactly as received. Re-serializing JSON before verifying changes the
@@ -584,8 +615,8 @@ keeping each tranche at or below ₹1,999 is a way to stay under that threshold.
 the only place in the codebase where that number is written down.
 
 ```python
-SplitConfig()                       # 199_900 paise (₹1,999) - the default ceiling
-SplitConfig(tranche_paise=50_000)   # ₹500 per tranche - configure to your compliance policy
+SplitConfig()  # 199_900 paise (₹1,999) - the default ceiling
+SplitConfig(tranche_paise=50_000)  # ₹500 per tranche - configure to your compliance policy
 ```
 
 `tranchepay` does not decide the size for you. It splits `amount_paise` with

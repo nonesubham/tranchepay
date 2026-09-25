@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from .models import DEFAULT_TRANCHE_PAISE, SplitSession, Tranche
 from .money import require_paise
 
-__all__ = ["SplitPlan", "build_session", "plan_tranches"]
+__all__ = ["SplitPlan", "build_session", "estimate_tranche_count", "plan_tranches"]
 
 
 class SplitPlan(BaseModel):
@@ -106,3 +106,37 @@ def build_session(plan: SplitPlan, *, currency: str) -> SplitSession:
             for index, amount in enumerate(plan.amounts_paise)
         ],
     )
+
+
+def estimate_tranche_count(
+    amount_paise: int,
+    tranche_paise: int = DEFAULT_TRANCHE_PAISE,
+) -> int:
+    """Return how many tranches ``amount_paise`` will be split into.
+
+    Pure arithmetic - no client, store, clock, or I/O - so it can be called on
+    the checkout screen *before* a session exists, to tell the customer how many
+    payments to expect. It is implemented as
+    ``plan_tranches(amount_paise, tranche_paise).tranche_count``, so the estimate
+    and the split engine can never disagree.
+
+    Args:
+        amount_paise: Total amount to collect, in paise.
+        tranche_paise: Maximum size of one tranche, in paise.
+
+    Returns:
+        ``ceil(amount_paise / tranche_paise)``. An amount at or below the ceiling
+        is a single tranche, so the result is always at least ``1``.
+
+    Raises:
+        TypeError: If either argument is not an ``int``, so a float can never
+            leak into money arithmetic.
+        ValueError: If either argument is zero or negative.
+
+    Example:
+        >>> estimate_tranche_count(450_000, 200_000)
+        3
+        >>> estimate_tranche_count(150_000, 200_000)
+        1
+    """
+    return plan_tranches(amount_paise, tranche_paise).tranche_count

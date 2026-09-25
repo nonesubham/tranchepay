@@ -18,6 +18,7 @@ from tranchepay import (
     SessionStatus,
     TrancheStatus,
     VerificationError,
+    estimate_tranche_count,
 )
 
 CEILING = 1_000
@@ -55,6 +56,16 @@ class TestStartingASession:
         run.start(2_000)
 
         assert [t.amount_paise for t in run.session().tranches] == [CEILING, CEILING]
+
+    def test_session_reports_its_total_tranche_count(self, run: SplitRun) -> None:
+        """Progress copy ("Tranche 1 of 3") reads from the session itself."""
+        run.start(2_500)
+
+        session = run.session()
+
+        assert session.total_tranches == 3
+        assert session.total_tranches == len(session.tranches)
+        assert session.total_tranches == estimate_tranche_count(session.amount_paise, CEILING)
 
     def test_receipt_and_notes_apply_to_the_first_order_only(self, run: SplitRun) -> None:
         first = run.start(2_000, receipt="rcpt_1", notes={"sku": "abc"})

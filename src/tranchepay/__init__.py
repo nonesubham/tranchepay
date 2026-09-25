@@ -37,7 +37,7 @@ from .models import (
     Tranche,
 )
 from .money import gross_up, require_paise, validate_fee_rate
-from .split import SplitPlan, plan_tranches
+from .split import SplitPlan, estimate_tranche_count, plan_tranches
 from .store import InMemorySessionStore, SessionStore
 from .webhooks import verify_webhook
 
@@ -66,6 +66,7 @@ __all__ = [
     "TrancheStatus",
     "VerificationError",
     "__version__",
+    "estimate_tranche_count",
     "gross_up",
     "plan_tranches",
     "require_paise",

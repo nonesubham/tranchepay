@@ -16,6 +16,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    computed_field,
     field_validator,
     model_validator,
 )
@@ -146,6 +147,18 @@ class SplitSession(BaseModel):
     def touched(self) -> SplitSession:
         """Return a copy of this session stamped with the current UTC time."""
         return self.model_copy(update={"updated_at": datetime.now(timezone.utc)})
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_tranches(self) -> int:
+        """How many tranches this session was split into.
+
+        Derived from ``tranches``, so it is populated automatically when the
+        session is built and can never drift from the parts actually stored. It
+        is a computed field, so it also appears in ``model_dump`` /
+        ``model_dump_json`` and survives a persistence round trip.
+        """
+        return len(self.tranches)
 
     def tranche_for_order(self, order_id: str) -> Tranche | None:
         """Return the tranche created as ``order_id``, if any."""
