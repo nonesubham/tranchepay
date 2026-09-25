@@ -6,9 +6,10 @@ as a :class:`typing.Protocol`: the official client satisfies it structurally, an
 so does any other object exposing ``order``, ``payment``, and ``utility`` with the
 same call shapes (which is what makes the test double in this repo possible).
 
-Only the subset tranchepay actually uses is declared. Every method here is
-called by this library and is covered by the test double; nothing else is
-assumed about the client.
+Everything tranchepay calls is declared here, and nothing else is assumed about
+the client. ``payment.capture`` is the one exception: tranchepay always creates
+orders with ``payment_capture=1`` and never captures itself, but it is declared
+because merchants on manual capture call it alongside this library.
 """
 
 from __future__ import annotations
