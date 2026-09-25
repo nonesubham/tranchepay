@@ -142,7 +142,7 @@ def _round_fraction(value: Fraction, policy: RoundingPolicy) -> int:
         bump = int(half > 0)
     elif name == RoundingPolicy.ROUND_HALF_EVEN.value:
         bump = int(half > 0) if half != 0 else quotient % 2
-    else:
+    else:  # pragma: no cover - RoundingPolicy(policy) already rejected unknown names
         msg = f"unsupported rounding policy: {policy!r}"
         raise ValueError(msg)
 

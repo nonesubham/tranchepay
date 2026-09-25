@@ -42,3 +42,11 @@ def test_foreign_exception_is_chained(fake_client: FakeRazorpayClient) -> None:
         verify_webhook(fake_client, BODY, sign(BODY, "other_secret"), SECRET)
 
     assert isinstance(excinfo.value.__cause__, FakeSignatureError)
+
+
+def test_a_falsey_result_is_treated_as_failure(fake_client: FakeRazorpayClient) -> None:
+    """Some client versions return False instead of raising; both are failures."""
+    fake_client.utility.verify_webhook_signature = lambda body, signature, secret: False  # type: ignore[method-assign]
+
+    with pytest.raises(VerificationError, match="webhook signature verification failed"):
+        verify_webhook(fake_client, BODY, "whatever", SECRET)

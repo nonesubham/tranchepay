@@ -250,3 +250,13 @@ class TestRejections:
             run.composer.verify_and_advance(
                 first.session_id or "", third.order_id, "pay_3", signature
             )
+
+
+def test_a_falsey_signature_result_is_rejected(run: SplitRun) -> None:
+    """Some client versions return False instead of raising; both are failures."""
+    first = run.start(2_000)
+    run.client.add_payment("pay_1", CEILING, order_id=first.order_id)
+    run.client.utility.verify_payment_signature = lambda parameters: False  # type: ignore[method-assign]
+
+    with pytest.raises(VerificationError, match="signature verification failed"):
+        run.verify(first, "pay_1", signature="anything")

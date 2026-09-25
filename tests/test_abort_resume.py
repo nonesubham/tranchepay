@@ -230,3 +230,29 @@ class TestResume:
         assert run.verify(third, "pay_3") is None
         assert run.session().status is SessionStatus.COMPLETE
         assert run.session().total_paid_paise() == 2_500
+
+
+def test_a_paid_tranche_without_a_payment_id_cannot_be_refunded(run: SplitRun) -> None:
+    """Refunding needs a payment id; a corrupted session must not abort silently."""
+    first = run.start(2_500)
+    run.verify(first, "pay_1")
+    session = run.session()
+    session.tranches[0].payment_id = None
+    run.composer.store.update(session)
+
+    with pytest.raises(PartialPaymentError, match="has no payment id to refund"):
+        run.composer.abort_and_refund(run.session_id or "")
+
+    assert run.client.refunds == []
+
+
+def test_resume_needs_a_pending_tranche(run: SplitRun) -> None:
+    first = run.start(2_500)
+    session = run.session()
+    assert first.session_id is not None
+    for tranche in session.tranches:
+        tranche.status = TrancheStatus.FAILED
+    run.composer.store.update(session)
+
+    with pytest.raises(SessionStateError, match="no pending tranche to resume"):
+        run.composer.resume(first.session_id)

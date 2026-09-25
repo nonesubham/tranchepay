@@ -205,8 +205,9 @@ class PaymentComposer:
                 amount_paise, receipt=receipt, notes=notes, currency=currency
             )
 
-        msg = f"unsupported payment mode: {mode!r}"  # pragma: no cover - defensive
-        raise PaymentComposeError(msg)
+        # Defensive: PaymentMode(mode) above already rejected anything unknown.
+        msg = f"unsupported payment mode: {mode!r}"  # pragma: no cover
+        raise PaymentComposeError(msg)  # pragma: no cover
 
     def verify_and_advance(
         self,
