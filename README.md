@@ -7,6 +7,7 @@ large amount as sequential tranches of at most ₹1,999.
 [![CI](https://github.com/nonesubham/tranchepay/actions/workflows/ci.yml/badge.svg)](https://github.com/nonesubham/tranchepay/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![PyPI](https://img.shields.io/badge/PyPI-pending-yellow)
 
 - **Composition only.** tranchepay never subclasses, monkey-patches, or forks
   `razorpay.Client`. You build and configure the client; tranchepay calls its public
@@ -26,12 +27,26 @@ exception hierarchy, custom session stores, and compliance - lives in
 
 ## Install
 
+> **Not on PyPI yet.** The PyPI release is still pending, so `pip install tranchepay`
+> does not work today. Clone the repository and install from source.
+
 ```bash
-pip install tranchepay
+git clone https://github.com/nonesubham/tranchepay.git
+cd tranchepay
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
 ```
 
+Or install straight from GitHub without cloning:
+
+```bash
+pip install "tranchepay @ git+https://github.com/nonesubham/tranchepay.git"
+```
+
+Once the PyPI release ships, `pip install tranchepay` will be the supported path.
+
 Requires Python 3.10+ and `razorpay>=1.4` (installed automatically). Add the dev
-extras for tests and type checks: `pip install "tranchepay[dev]"`.
+extras for tests and type checks: `pip install -e ".[dev]"`.
 
 ## Quickstart
 

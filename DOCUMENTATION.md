@@ -52,9 +52,23 @@ anything the SDK gives you is still there under `.raw`.
 
 ## Installation
 
+`tranchepay` is **not on PyPI yet** — the release is still pending — so install it
+from source:
+
 ```bash
-pip install tranchepay
+git clone https://github.com/nonesubham/tranchepay.git
+cd tranchepay
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
 ```
+
+Or install straight from GitHub without cloning:
+
+```bash
+pip install "tranchepay @ git+https://github.com/nonesubham/tranchepay.git"
+```
+
+Once the package is published, `pip install tranchepay` will be the supported path.
 
 Requirements:
 
@@ -66,7 +80,7 @@ There are no runtime extras. The optional development extras add the test and
 type-checking toolchain (`pytest`, `pytest-cov`, `ruff`, `mypy`, `python-dotenv`):
 
 ```bash
-pip install "tranchepay[dev]"
+pip install -e ".[dev]"
 ```
 
 ## Initialization
