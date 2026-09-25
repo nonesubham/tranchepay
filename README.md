@@ -256,6 +256,21 @@ ruff check . && ruff format --check .
 mypy
 ```
 
+### Publishing
+
+Before any release, run the pre-publish gate. It builds the sdist and wheel in an
+isolated environment, verifies the metadata and archive contents, runs
+`twine check --strict` and `validate-pyproject`, then installs the wheel into a
+throwaway venv and imports it:
+
+```bash
+./scripts/pre_publish_check.sh                 # verify only
+./scripts/pre_publish_check.sh --upload-testpypi  # verify, then upload to TestPyPI
+```
+
+It prints the exact `twine` commands to dry-run against TestPyPI before you
+publish to the real index.
+
 The default suite makes **zero network calls** and never touches a real Razorpay
 account: `tests/fakes.py` implements the client's resources in-process, including real
 HMAC-SHA256 signature verification, and `tests/test_composer_modes.py` asserts that the
