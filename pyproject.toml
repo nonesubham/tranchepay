@@ -32,6 +32,7 @@ dev = [
     "mypy>=1.10",
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "python-dotenv>=1.0",
     "ruff>=0.6",
 ]
 
@@ -52,6 +53,9 @@ tranchepay = ["py.typed"]
 addopts = "-ra --strict-markers --strict-config"
 testpaths = ["tests"]
 filterwarnings = ["error"]
+markers = [
+    "integration: hits the live Razorpay test (sandbox) API; needs RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET and is excluded from the default run",
+]
 
 [tool.ruff]
 line-length = 100
