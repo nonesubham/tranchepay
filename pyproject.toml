@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tranchepay"
+description = "Payment composition for Razorpay: exact, with-charges, and split-tranche orders around your own client instance."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "tranchepay contributors" }]
+keywords = ["razorpay", "payments", "india", "upi", "gross-up", "tranches"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dynamic = ["version"]
+dependencies = [
+    "pydantic>=2.6",
+    "razorpay>=1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Repository = "https://github.com/tranchepay/tranchepay"
+Changelog = "https://github.com/tranchepay/tranchepay/releases"
+
+[tool.setuptools.dynamic]
+version = { attr = "tranchepay.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tranchepay = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "A", "C4", "DTZ", "T20",
+    "EM", "ISC", "ICN", "LOG", "G", "PIE", "PT", "RET", "SIM", "TID",
+    "ARG", "PTH", "ERA", "PL", "RUF",
+]
+ignore = [
+    "PLR0913",  # too many arguments (checkout helpers legitimately take many)
+    "PLR2004",  # magic value in tests is fine
+    "TID252",   # relative imports are intentional in a small package
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "PLR0915", "S101", "ERA001"]
+"docs/*" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tranchepay"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["razorpay.*", "razorpay"]
+ignore_missing_imports = true
