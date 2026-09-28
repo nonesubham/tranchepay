@@ -10,7 +10,8 @@ Run them with ``./run_integration.sh`` or:
 
 What is live and what is mocked
 -------------------------------
-Live, through the official SDK, which is the point of this suite:
+Live, through the official SDK (wrapped by :class:`RazorpayAdapter`, which the
+composers drive), which is the point of this suite:
 
 * ``client.order.create`` / ``client.order.fetch`` - proves tranchepay's payloads
   are accepted by Razorpay and that what we report matches what was stored.
@@ -58,7 +59,9 @@ import pytest
 
 from tranchepay import (
     ChargesConfig,
+    GatewayFactory,
     PaymentComposer,
+    PaymentGateway,
     PaymentMode,
     SessionStatus,
     SplitConfig,
@@ -148,15 +151,26 @@ def rzp_client() -> Any:
 
 
 @pytest.fixture
-def composer(rzp_client: Any) -> PaymentComposer:
-    """A composer whose fee rate is the 2% used by the WITH_CHARGES scenario."""
-    return PaymentComposer(rzp_client, charges=ChargesConfig(fee_rate=Decimal("0.02")))
+def gateway(rzp_client: Any) -> PaymentGateway:
+    """The factory-built adapter wrapping the shared sandbox client.
+
+    Reusing one client instance matters here: the scenarios patch methods on
+    ``rzp_client`` to simulate checkout, and the adapter must observe those
+    patches.
+    """
+    return GatewayFactory.get_gateway("razorpay", {"client": rzp_client})
 
 
 @pytest.fixture
-def split_composer(rzp_client: Any) -> PaymentComposer:
+def composer(gateway: PaymentGateway) -> PaymentComposer:
+    """A composer whose fee rate is the 2% used by the WITH_CHARGES scenario."""
+    return PaymentComposer(gateway, charges=ChargesConfig(fee_rate=Decimal("0.02")))
+
+
+@pytest.fixture
+def split_composer(gateway: PaymentGateway) -> PaymentComposer:
     """A composer with the ₹1,999 tranche ceiling used by the split scenarios."""
-    return PaymentComposer(rzp_client, split=SplitConfig(tranche_paise=199_900))
+    return PaymentComposer(gateway, split=SplitConfig(tranche_paise=199_900))
 
 
 class TestScenarioAExact:
@@ -264,7 +278,9 @@ class TestScenarioCSplitStart:
 class TestScenarioDWebhooks:
     """Webhook verification, using the SDK's real HMAC implementation."""
 
-    def test_valid_signature_passes_and_tampering_is_rejected(self, rzp_client: Any) -> None:
+    def test_valid_signature_passes_and_tampering_is_rejected(
+        self, gateway: PaymentGateway
+    ) -> None:
         payload = json.dumps(
             {
                 "entity": "event",
@@ -291,22 +307,22 @@ class TestScenarioDWebhooks:
         # dashboard; here we verify the same HMAC path with our key secret.
         signature = hmac.new(KEY_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
-        assert verify_webhook(rzp_client, payload, signature, KEY_SECRET) is True
+        assert verify_webhook(gateway, payload, signature, KEY_SECRET) is True
 
         with pytest.raises(VerificationError):
-            verify_webhook(rzp_client, payload, "0" * 64, KEY_SECRET)
+            verify_webhook(gateway, payload, "0" * 64, KEY_SECRET)
 
         tampered = payload.replace('"amount":50000', '"amount":500000')
         assert tampered != payload
         with pytest.raises(VerificationError):
-            verify_webhook(rzp_client, tampered, signature, KEY_SECRET)
+            verify_webhook(gateway, tampered, signature, KEY_SECRET)
 
-    def test_the_sdk_rejection_is_chained_into_our_error(self, rzp_client: Any) -> None:
+    def test_the_sdk_rejection_is_chained_into_our_error(self, gateway: PaymentGateway) -> None:
         body = '{"event":"payment.captured"}'
         signature = hmac.new(KEY_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
 
         with pytest.raises(VerificationError) as excinfo:
-            verify_webhook(rzp_client, body, signature, "a-different-webhook-secret")
+            verify_webhook(gateway, body, signature, "a-different-webhook-secret")
 
         assert isinstance(excinfo.value.__cause__, razorpay.errors.SignatureVerificationError)
 

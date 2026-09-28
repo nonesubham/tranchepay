@@ -12,6 +12,7 @@ from tests.fakes import FakeRazorpayClient
 from tranchepay import (
     InMemorySessionStore,
     PaymentComposer,
+    RazorpayAdapter,
     SessionStore,
     SplitConfig,
     SplitSession,
@@ -134,7 +135,9 @@ class TestCustomAdapters:
         assert isinstance(store, SessionStore)
 
         composer = PaymentComposer(
-            FakeRazorpayClient(), split=SplitConfig(tranche_paise=1_000), store=store
+            RazorpayAdapter(FakeRazorpayClient()),
+            split=SplitConfig(tranche_paise=1_000),
+            store=store,
         )
         first = composer.create_order(2_500, mode="split")  # type: ignore[arg-type]
         assert first.session_id is not None
@@ -143,16 +146,16 @@ class TestCustomAdapters:
 
     def test_the_composer_exposes_the_store_it_uses(self) -> None:
         store = DictBackedStore()
-        composer = PaymentComposer(FakeRazorpayClient(), store=store)
+        composer = PaymentComposer(RazorpayAdapter(FakeRazorpayClient()), store=store)
 
         assert composer.store is store
 
     @pytest.mark.parametrize("bad_store", [object(), "store", 3])
     def test_objects_that_are_not_stores_are_rejected(self, bad_store: Any) -> None:
         with pytest.raises(TypeError, match="store must implement"):
-            PaymentComposer(FakeRazorpayClient(), store=bad_store)
+            PaymentComposer(RazorpayAdapter(FakeRazorpayClient()), store=bad_store)
 
     def test_none_means_use_the_default_store(self) -> None:
-        composer = PaymentComposer(FakeRazorpayClient(), store=None)
+        composer = PaymentComposer(RazorpayAdapter(FakeRazorpayClient()), store=None)
 
         assert isinstance(composer.store, InMemorySessionStore)

@@ -1,89 +1,80 @@
-"""Structural typing for the Razorpay client tranchepay composes around.
+"""The gateway abstraction tranchepay composes around.
 
-tranchepay never subclasses ``razorpay.Client``. It only calls public resources
-on an instance the developer already configured, so the dependency is expressed
-as a :class:`typing.Protocol`: the official client satisfies it structurally, and
-so does any other object exposing ``order``, ``payment``, and ``utility`` with the
-same call shapes (which is what makes the test double in this repo possible).
+:class:`PaymentGateway` is the only surface the rest of the library talks to:
+create an order, look an order or payment up, verify a signature, issue a
+refund. Razorpay, Paytm and PhonePe each ship an adapter implementing it, which
+is why the composer, the split flow and the recovery code contain no
+provider-specific calls at all.
 
-Everything tranchepay calls is declared here, and nothing else is assumed about
-the client. ``payment.capture`` is the one exception: tranchepay always creates
-orders with ``payment_capture=1`` and never captures itself, but it is declared
-because merchants on manual capture call it alongside this library.
+Adapters return their provider's response payload unchanged; tranchepay reads
+only the fields it needs, so forwarding the API response is both simpler and
+more future-proof than translating it.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
-__all__ = [
-    "OrderResource",
-    "PaymentResource",
-    "RazorpayClientProtocol",
-    "UtilityResource",
-]
-
-
-class OrderResource(Protocol):
-    """``client.order``."""
-
-    def create(self, data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        """Create an order and return the API response."""
-        ...  # pragma: no cover - protocol declaration
-
-    def fetch(self, order_id: str, **kwargs: Any) -> dict[str, Any]:
-        """Fetch an order by id and return the API response."""
-        ...  # pragma: no cover - protocol declaration
-
-
-class PaymentResource(Protocol):
-    """``client.payment``."""
-
-    def fetch(self, payment_id: str, **kwargs: Any) -> dict[str, Any]:
-        """Fetch a payment by id and return the API response."""
-        ...  # pragma: no cover - protocol declaration
-
-    def capture(self, payment_id: str, amount: int, **kwargs: Any) -> dict[str, Any]:
-        """Capture a payment for ``amount`` paise."""
-        ...  # pragma: no cover - protocol declaration
-
-    def refund(self, payment_id: str, data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        """Refund a payment; ``data`` carries at least ``amount`` in paise."""
-        ...  # pragma: no cover - protocol declaration
-
-
-class UtilityResource(Protocol):
-    """``client.utility``."""
-
-    def verify_payment_signature(self, parameters: dict[str, Any]) -> bool:
-        """Verify a checkout signature; raise or return ``False`` when invalid."""
-        ...  # pragma: no cover - protocol declaration
-
-    def verify_webhook_signature(self, body: str, signature: str, secret: str) -> bool:
-        """Verify a webhook signature; raise or return ``False`` when invalid."""
-        ...  # pragma: no cover - protocol declaration
+__all__ = ["PaymentGateway"]
 
 
 @runtime_checkable
-class RazorpayClientProtocol(Protocol):
-    """A configured Razorpay client (official or compatible).
+class PaymentGateway(Protocol):
+    """What tranchepay needs from a payment provider.
 
-    The resources are declared as read-only properties rather than attributes so
-    that concrete resource types are accepted covariantly: the official client
-    exposes plain attributes, and ``isinstance`` works against both.
+    A gateway is satisfied structurally: implement these methods and the
+    composer will drive it. The shipped adapters are
+    :class:`~tranchepay.gateways.RazorpayAdapter`,
+    :class:`~tranchepay.gateways.PaytmAdapter` and
+    :class:`~tranchepay.gateways.PhonePeAdapter`; a custom one can be registered
+    with :meth:`tranchepay.GatewayFactory.register_gateway`.
+
+    The protocol is intentionally narrow. Everything is expressed in integer
+    paise, and no method may mutate the arguments it is given.
     """
 
-    @property
-    def order(self) -> OrderResource:
-        """Order resource used to create and fetch orders."""
+    def create_order(
+        self,
+        amount_paise: int,
+        *,
+        currency: str | None = None,
+        receipt: str | None = None,
+        notes: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create an order for ``amount_paise`` and return the provider response.
+
+        The response must carry a usable ``id``; ``amount``, ``currency``,
+        ``receipt`` and ``status`` are read when present. ``currency`` falls back
+        to the provider's default when ``None``.
+        """
         ...  # pragma: no cover - protocol declaration
 
-    @property
-    def payment(self) -> PaymentResource:
-        """Payment resource used to fetch, capture, and refund payments."""
+    def fetch_order(self, order_id: str) -> dict[str, Any]:
+        """Return the provider's order payload, including its ``status``.
+
+        Raises whatever the provider raises when the order is unknown; callers
+        translate that into :class:`~tranchepay.SessionStateError`.
+        """
         ...  # pragma: no cover - protocol declaration
 
-    @property
-    def utility(self) -> UtilityResource:
-        """Utility resource that verifies Razorpay signatures."""
+    def fetch_payment(self, payment_id: str) -> dict[str, Any]:
+        """Return the provider's payment payload, including ``status``/``amount``."""
+        ...  # pragma: no cover - protocol declaration
+
+    def verify_signature(self, order_id: str, payment_id: str, signature: str) -> bool:
+        """Verify a checkout signature.
+
+        Returns ``True`` when valid and may either return ``False`` or raise when
+        it is not, mirroring the provider SDKs; tranchepay normalises both into
+        :class:`~tranchepay.VerificationError`.
+        """
+        ...  # pragma: no cover - protocol declaration
+
+    def verify_webhook_signature(self, body: str, signature: str, secret: str) -> bool:
+        """Verify a webhook payload against ``secret``, same contract as above."""
+        ...  # pragma: no cover - protocol declaration
+
+    def refund_payment(self, payment_id: str, amount_paise: int) -> dict[str, Any]:
+        """Refund exactly ``amount_paise`` of ``payment_id`` and return the response."""
         ...  # pragma: no cover - protocol declaration

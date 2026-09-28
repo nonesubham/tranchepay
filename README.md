@@ -1,17 +1,22 @@
 # tranchepay
 
-Compose payment modes around the Razorpay client you already own: charge the exact
-amount, gross the amount up so the customer covers the gateway fee, or collect one
-large amount as sequential tranches of at most ₹1,999.
+Compose payment modes around the gateway you already own: charge the exact amount,
+gross the amount up so the customer covers the gateway fee, or collect one large
+amount as sequential tranches of at most ₹1,999. Razorpay, Paytm and PhonePe ship
+as adapters, and you can register your own.
 
 [![CI](https://github.com/nonesubham/tranchepay/actions/workflows/ci.yml/badge.svg)](https://github.com/nonesubham/tranchepay/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/tranchepay.svg)](https://pypi.org/project/tranchepay/)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-- **Composition only.** tranchepay never subclasses, monkey-patches, or forks
-  `razorpay.Client`. You build and configure the client; tranchepay calls its public
-  `order`, `payment`, and `utility` resources.
+- **Composition only.** tranchepay never subclasses, monkey-patches, or forks a
+  provider SDK. You build and configure the client, hand over an adapter, and
+  tranchepay calls only its public surface.
+- **One narrow interface.** Everything above the adapters is written against the
+  `PaymentGateway` protocol, so the composer, the split flow and the recovery code
+  never name a provider. `GatewayFactory` picks the adapter by name, JDBC
+  `DriverManager` style.
 - **Integer paise everywhere.** Amounts are `int` paise and fees are
   `decimal.Decimal`; a float is rejected rather than rounded.
 - **Explicit rounding.** Gross-up rounding is a documented config value, not an
@@ -31,7 +36,12 @@ exception hierarchy, custom session stores, and compliance - lives in
 pip install tranchepay
 ```
 
-Requires Python 3.10+ and `razorpay>=1.4` (installed automatically).
+Requires Python 3.10+ and `razorpay>=1.4` (installed automatically). The Paytm and
+PhonePe adapters need `httpx`; install the extra when you use them:
+
+```bash
+pip install "tranchepay[http]"
+```
 
 Working on tranchepay itself? Clone it and install an editable copy with the dev
 extras:
@@ -48,16 +58,23 @@ pip install -e ".[dev]"
 ```python
 from decimal import Decimal
 
-import razorpay
-from tranchepay import ChargesConfig, PaymentComposer, PaymentMode, SplitConfig
+from tranchepay import ChargesConfig, GatewayFactory, PaymentComposer, PaymentMode, SplitConfig
 
-client = razorpay.Client(auth=("rzp_test_xxxxxxxx", "your_key_secret"))
+# Ask the factory for an adapter; credentials come from your config, never hardcoded.
+gateway = GatewayFactory.get_gateway(
+    "razorpay",
+    {"key_id": "rzp_test_xxxxxxxx", "key_secret": "your_key_secret"},
+)
 composer = PaymentComposer(
-    client,
+    gateway,
     charges=ChargesConfig(fee_rate=Decimal("0.0236")),  # 2.36% - your rate, as a Decimal
     split=SplitConfig(),  # tranche ceiling, default 199_900 paise
 )
 ```
+
+Already have a configured client? Wrap it directly or hand it to the factory:
+`GatewayFactory.get_gateway("razorpay", {"client": client})`. Paytm and PhonePe use
+`{"merchant_id": ..., "merchant_key"/"salt_key": ...}`.
 
 ### 1. EXACT — the merchant absorbs the charges
 
@@ -96,11 +113,10 @@ next_order = composer.verify_and_advance(
 # next_order is the next tranche's order to check out, or None when the split is complete.
 ```
 
-`verify_and_advance` verifies the signature with Razorpay's own
-`client.utility.verify_payment_signature`, fetches the payment, requires
-`status == "captured"` and an amount equal to the tranche, marks the tranche paid, and
-creates the next order. Each tranche is verified independently, and the whole call is
-idempotent.
+`verify_and_advance` verifies the signature through the gateway's own verifier,
+fetches the payment, requires `status == "captured"` and an amount equal to the
+tranche, marks the tranche paid, and creates the next order. Each tranche is verified
+independently, and the whole call is idempotent.
 
 ### Recovering a split
 
@@ -116,7 +132,7 @@ session.status  # SessionStatus.ABORTED
 from tranchepay import VerificationError, verify_webhook
 
 try:
-    verify_webhook(client, raw_body, signature_header, webhook_secret)
+    verify_webhook(gateway, raw_body, signature_header, webhook_secret)
 except VerificationError:
     ...  # return 400
 ```
@@ -151,10 +167,15 @@ session.model_dump_json()  # persist it wherever you like
                          SplitRecovery ──────┤  (split_recovery: abort_and_refund, resume)
                          verification ───────┘  (signature + captured-payment checks)
                                              │
-       razorpay.Client (your instance, used as-is, never wrapped)
-       ├── order.create / order.fetch
-       ├── payment.fetch / payment.capture / payment.refund
-       └── utility.verify_payment_signature / verify_webhook_signature
+       PaymentGateway (Protocol - the only surface the code above knows)
+       ├── create_order / fetch_order / fetch_payment
+       ├── verify_signature / verify_webhook_signature
+       └── refund_payment
+                                             │
+              GatewayFactory ────────────────┤  (get_gateway, register_gateway)
+              ├── RazorpayAdapter ───────────┤  (wraps your razorpay.Client)
+              ├── PaytmAdapter ──────────────┤  (httpx; execute() left to you)
+              └── PhonePeAdapter ────────────┘  (httpx; OAuth v2 + X-VERIFY)
                                              │
                          SessionStore ◀──────┘  (InMemorySessionStore, or your own)
 ```
@@ -164,13 +185,15 @@ session.model_dump_json()  # persist it wherever you like
 | `models.py` | Pydantic v2 config, `SplitSession`/`Tranche`, `OrderResult` |
 | `money.py` | Exact paise arithmetic, `gross_up`, fee-rate validation |
 | `split.py` | Pure tranche planning (`plan_tranches`, `build_session`) |
-| `orders.py` | Order payloads and per-tranche bookkeeping |
+| `orders.py` | Provider-agnostic order creation and per-tranche bookkeeping |
 | `split_flow.py` | Collection state machine, `verify_and_advance` |
 | `split_recovery.py` | `abort_and_refund`, `resume` |
 | `store.py` | `SessionStore` protocol + `InMemorySessionStore` |
 | `verification.py` | Signature and captured-payment checks |
 | `session_locks.py` | Process-global per-session transition locks |
-| `protocol.py` | Structural typing for the Razorpay client |
+| `protocol.py` | The `PaymentGateway` protocol every adapter implements |
+| `factory.py` | `GatewayFactory`: provider lookup and custom registration |
+| `gateways/` | `RazorpayAdapter`, `PaytmAdapter`, `PhonePeAdapter` + shared HTTP plumbing |
 
 ## Money rules
 
@@ -240,6 +263,8 @@ All errors derive from `PaymentComposeError`.
 | `SessionNotFoundError` | The session id is unknown to the store |
 | `SessionStateError` | Order not in the session, wrong tranche, or session already closed |
 | `PartialPaymentError` | A split could not complete or unwind; call again to finish |
+| `UnsupportedGatewayError` | `GatewayFactory.get_gateway` was asked for an unknown provider |
+| `GatewayConfigurationError` | An adapter could not be built: missing credential or missing optional dependency |
 
 ## Development
 

@@ -1,8 +1,8 @@
-"""The composer: one configured client, three payment modes.
+"""The composer: one configured gateway, three payment modes.
 
-Composition only. The developer constructs ``razorpay.Client`` themselves and
-hands it in; tranchepay calls ``client.order``, ``client.payment``, and
-``client.utility`` and never subclasses, patches, or wraps the client itself.
+Composition only. The developer obtains a :class:`~tranchepay.PaymentGateway`
+(usually from :class:`~tranchepay.GatewayFactory`) and hands it in; the composer
+drives it through that narrow protocol and never imports a provider SDK itself.
 """
 
 from __future__ import annotations
@@ -20,36 +20,35 @@ from .models import (
     SplitSession,
 )
 from .money import gross_up, require_paise
-from .orders import create_razorpay_order, order_result
-from .protocol import RazorpayClientProtocol
+from .orders import create_order, order_result
+from .protocol import PaymentGateway
 from .split_flow import SplitFlow
 from .store import InMemorySessionStore, SessionStore
 
 __all__ = ["PaymentComposer"]
 
 
-def _ensure_client(client: object) -> RazorpayClientProtocol:
-    """Return ``client`` if it exposes the Razorpay resources tranchepay uses.
+def _ensure_gateway(gateway: object) -> PaymentGateway:
+    """Return ``gateway`` if it implements the :class:`PaymentGateway` protocol.
 
     Args:
-        client: Candidate client, typed loosely so untyped callers are checked at
-            runtime rather than trusted.
+        gateway: Candidate adapter, typed loosely so untyped callers are checked
+            at runtime rather than trusted.
 
     Returns:
-        The same object, narrowed to
-        :class:`~tranchepay.protocol.RazorpayClientProtocol`.
+        The same object, narrowed to :class:`~tranchepay.protocol.PaymentGateway`.
 
     Raises:
-        TypeError: If the object does not expose ``order``, ``payment``, and
-            ``utility``.
+        TypeError: If the object does not implement the protocol's methods.
     """
-    if not isinstance(client, RazorpayClientProtocol):
+    if not isinstance(gateway, PaymentGateway):
         msg = (
-            "client must be a configured razorpay.Client instance (or an object exposing "
-            f"order/payment/utility resources), not {type(client).__name__}"
+            "gateway must be a PaymentGateway implementation (for example "
+            "GatewayFactory.get_gateway('razorpay', {...})), "
+            f"not {type(gateway).__name__}"
         )
         raise TypeError(msg)
-    return client
+    return gateway
 
 
 def _ensure_store(store: object) -> SessionStore:
@@ -75,12 +74,12 @@ def _ensure_store(store: object) -> SessionStore:
 
 
 class PaymentComposer:
-    """Creates Razorpay orders for the three supported payment modes.
+    """Creates payment orders for the three supported modes.
 
     Args:
-        client: A configured ``razorpay.Client`` instance (or any object exposing
-            the same ``order``/``payment``/``utility`` resources). Used as-is and
-            never mutated.
+        gateway: A :class:`~tranchepay.PaymentGateway` implementation, normally
+            obtained from :meth:`tranchepay.GatewayFactory.get_gateway`. Used
+            as-is and never mutated.
         charges: Required to use :attr:`PaymentMode.WITH_CHARGES`; carries the
             ``Decimal`` fee rate and the explicit rounding policy.
         split: Tranche ceiling for :attr:`PaymentMode.SPLIT`. Defaults to ₹1,999
@@ -91,19 +90,19 @@ class PaymentComposer:
         currency: ISO-4217 currency used for every order this composer creates.
 
     Raises:
-        TypeError: If ``client`` does not expose the required resources.
+        TypeError: If ``gateway`` does not implement the protocol.
     """
 
     def __init__(
         self,
-        client: RazorpayClientProtocol,
+        gateway: PaymentGateway,
         *,
         charges: ChargesConfig | None = None,
         split: SplitConfig | None = None,
         store: SessionStore | None = None,
         currency: str = DEFAULT_CURRENCY,
     ) -> None:
-        self._client = _ensure_client(client)
+        self._gateway = _ensure_gateway(gateway)
         self._charges = charges
         self._split = split if split is not None else SplitConfig()
         self._currency = currency
@@ -111,9 +110,9 @@ class PaymentComposer:
         self._flow: SplitFlow | None = None
 
     @property
-    def client(self) -> RazorpayClientProtocol:
-        """The client this composer was configured with, unchanged."""
-        return self._client
+    def gateway(self) -> PaymentGateway:
+        """The gateway this composer was configured with, unchanged."""
+        return self._gateway
 
     @property
     def store(self) -> SessionStore:
@@ -129,18 +128,18 @@ class PaymentComposer:
         notes: Mapping[str, Any] | None = None,
         currency: str | None = None,
     ) -> OrderResult:
-        """Create the Razorpay order for ``amount_paise`` under ``mode``.
+        """Create the payment order for ``amount_paise`` under ``mode``.
 
-        Orders are always created with ``payment_capture=1`` so the resulting
-        payment settles without a second API call.
+        The gateway is responsible for translating the integer paise amount into
+        the provider's request shape.
 
         Args:
             amount_paise: For ``EXACT`` the amount to charge; for
                 ``WITH_CHARGES`` the amount the merchant wants to net; for
                 ``SPLIT`` the total to collect across tranches.
             mode: Payment mode to apply.
-            receipt: Optional receipt string, passed through to Razorpay.
-            notes: Optional notes, passed through to Razorpay.
+            receipt: Optional receipt string, passed through to the gateway.
+            notes: Optional notes, passed through to the gateway.
             currency: Overrides the composer's currency for this order.
 
         Returns:
@@ -168,8 +167,8 @@ class PaymentComposer:
         order_currency = currency or self._currency
 
         if mode_value == PaymentMode.EXACT.value:
-            raw = create_razorpay_order(
-                self._client, amount_paise, currency=order_currency, receipt=receipt, notes=notes
+            raw = create_order(
+                self._gateway, amount_paise, currency=order_currency, receipt=receipt, notes=notes
             )
             return order_result(
                 raw,
@@ -187,8 +186,8 @@ class PaymentComposer:
                 )
                 raise PaymentComposeError(msg)
             gross_paise = gross_up(amount_paise, self._charges.fee_rate, self._charges.rounding)
-            raw = create_razorpay_order(
-                self._client, gross_paise, currency=order_currency, receipt=receipt, notes=notes
+            raw = create_order(
+                self._gateway, gross_paise, currency=order_currency, receipt=receipt, notes=notes
             )
             return order_result(
                 raw,
@@ -286,6 +285,6 @@ class PaymentComposer:
         """Return the split flow for this composer, building it on first use."""
         if self._flow is None:
             self._flow = SplitFlow(
-                self._client, self._store, config=self._split, currency=self._currency
+                self._gateway, self._store, config=self._split, currency=self._currency
             )
         return self._flow
