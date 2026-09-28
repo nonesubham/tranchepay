@@ -1,9 +1,9 @@
 """Order creation and per-tranche bookkeeping shared by the composer and the flow.
 
-Everything that talks to ``client.order`` lives here, so the payload shape
-(``payment_capture=1``, integer paise, optional receipt/notes) is defined once,
-as is the rule that a tranche order is placed before the session that points at
-it is written.
+Everything that creates or inspects an order lives here, so the rule that a
+tranche order is placed before the session that points at it is written is
+defined once, on top of the provider-agnostic
+:class:`~tranchepay.protocol.PaymentGateway`.
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ from typing import Any
 from .enums import PaymentMode
 from .exceptions import PaymentComposeError, SessionStateError
 from .models import OrderResult, SplitSession
-from .protocol import RazorpayClientProtocol
+from .protocol import PaymentGateway
 from .store import SessionStore
 
 __all__ = [
-    "create_razorpay_order",
+    "create_order",
     "create_tranche_order",
     "ensure_tranche_order",
     "order_is_payable",
@@ -29,40 +29,31 @@ __all__ = [
 PAYABLE_ORDER_STATUSES = frozenset({"created", "attempted"})
 
 
-def create_razorpay_order(
-    client: RazorpayClientProtocol,
+def create_order(
+    gateway: PaymentGateway,
     amount_paise: int,
     *,
     currency: str,
     receipt: str | None = None,
     notes: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a Razorpay order with the tranchepay defaults.
+    """Create an order through ``gateway`` using the tranchepay defaults.
 
-    Orders are always created with ``payment_capture=1`` so the payment settles
-    without a second API call, and ``amount`` is always an ``int`` number of
-    paise.
+    ``amount`` is always an ``int`` number of paise, and the adapter is
+    responsible for translating that into whatever the provider expects (for
+    example Razorpay's ``payment_capture=1``).
 
     Args:
-        client: Configured Razorpay client (used as-is, never mutated).
+        gateway: Provider adapter (used as-is, never mutated).
         amount_paise: Amount to charge, in paise.
         currency: ISO-4217 currency code.
         receipt: Optional receipt string, passed through unchanged.
         notes: Optional notes, passed through unchanged.
 
     Returns:
-        The untouched Razorpay order response.
+        The untouched provider order response.
     """
-    data: dict[str, Any] = {
-        "amount": amount_paise,
-        "currency": currency,
-        "payment_capture": 1,
-    }
-    if receipt is not None:
-        data["receipt"] = receipt
-    if notes is not None:
-        data["notes"] = dict(notes)
-    return client.order.create(data)
+    return gateway.create_order(amount_paise, currency=currency, receipt=receipt, notes=notes)
 
 
 def order_result(
@@ -77,12 +68,12 @@ def order_result(
     net_paise: int | None = None,
     fee_paise: int = 0,
 ) -> OrderResult:
-    """Wrap a Razorpay order response into an :class:`~tranchepay.OrderResult`.
+    """Wrap a provider order response into an :class:`~tranchepay.OrderResult`.
 
     Args:
-        raw: Razorpay order response (or the fields stored for a session tranche).
+        raw: Provider order response (or the fields stored for a session tranche).
         mode: Mode that produced the order.
-        amount_paise: Amount sent to Razorpay, in paise.
+        amount_paise: Amount sent to the provider, in paise.
         currency_default: Currency to fall back to when the response omits it.
         receipt: Receipt to fall back to when the response omits it.
         session_id: Split session id, when the order belongs to one.
@@ -98,7 +89,7 @@ def order_result(
     """
     order_id = raw.get("id")
     if not isinstance(order_id, str) or not order_id:
-        msg = f"Razorpay order response has no usable 'id' field: {dict(raw)!r}"
+        msg = f"order response has no usable 'id' field: {dict(raw)!r}"
         raise PaymentComposeError(msg)
     raw_receipt = raw.get("receipt")
     return OrderResult(
@@ -150,19 +141,19 @@ def tranche_order_result(session: SplitSession, index: int) -> OrderResult:
 
 
 def create_tranche_order(
-    client: RazorpayClientProtocol,
+    gateway: PaymentGateway,
     store: SessionStore,
     session: SplitSession,
     index: int,
 ) -> OrderResult:
-    """Create the Razorpay order for a tranche and record it on the session.
+    """Create the order for a tranche and record it on the session.
 
     The order is placed before the session is written, so a failure leaves the
     session's pending tranche without an order - which :func:`ensure_tranche_order`
     retries - rather than pointing at an order that does not exist.
 
     Args:
-        client: Configured Razorpay client.
+        gateway: Provider adapter.
         store: Store holding the session.
         session: Session to update.
         index: Zero-based tranche position.
@@ -171,7 +162,7 @@ def create_tranche_order(
         The newly created order.
     """
     tranche = session.tranches[index]
-    raw = create_razorpay_order(client, tranche.amount_paise, currency=session.currency)
+    raw = create_order(gateway, tranche.amount_paise, currency=session.currency)
     result = order_result(
         raw,
         mode=PaymentMode.SPLIT,
@@ -186,22 +177,22 @@ def create_tranche_order(
 
 
 def ensure_tranche_order(
-    client: RazorpayClientProtocol,
+    gateway: PaymentGateway,
     store: SessionStore,
     session: SplitSession,
     index: int,
 ) -> OrderResult:
     """Return the tranche's order, creating it if the session has none yet."""
     if session.tranches[index].order_id is None:
-        return create_tranche_order(client, store, session, index)
+        return create_tranche_order(gateway, store, session, index)
     return tranche_order_result(session, index)
 
 
-def order_is_payable(client: RazorpayClientProtocol, order_id: str) -> bool:
+def order_is_payable(gateway: PaymentGateway, order_id: str) -> bool:
     """Whether checkout can still settle ``order_id``.
 
     Args:
-        client: Configured Razorpay client.
+        gateway: Provider adapter.
         order_id: Order to inspect.
 
     Returns:
@@ -213,7 +204,7 @@ def order_is_payable(client: RazorpayClientProtocol, order_id: str) -> bool:
             is told to verify the existing payment instead.
     """
     try:
-        order = client.order.fetch(order_id)
+        order = gateway.fetch_order(order_id)
     except Exception as exc:
         msg = f"could not fetch order {order_id} to check whether it is still payable"
         raise SessionStateError(msg) from exc

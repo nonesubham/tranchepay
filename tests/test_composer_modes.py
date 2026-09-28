@@ -11,7 +11,9 @@ from tranchepay import (
     ChargesConfig,
     PaymentComposeError,
     PaymentComposer,
+    PaymentGateway,
     PaymentMode,
+    RazorpayAdapter,
     RoundingPolicy,
 )
 
@@ -94,8 +96,8 @@ class TestExactMode:
         assert result.currency == "USD"
         assert fake_client.created_orders[0]["currency"] == "USD"
 
-    def test_composer_currency_is_used_by_default(self, fake_client: FakeRazorpayClient) -> None:
-        composer = PaymentComposer(fake_client, currency="AED")
+    def test_composer_currency_is_used_by_default(self, fake_gateway: RazorpayAdapter) -> None:
+        composer = PaymentComposer(fake_gateway, currency="AED")
 
         assert composer.create_order(500).currency == "AED"
 
@@ -135,21 +137,21 @@ class TestWithChargesMode:
         assert fake_client.created_amounts() == [102_417]
 
     def test_gross_equals_net_when_the_fee_rate_is_zero(
-        self, fake_client: FakeRazorpayClient
+        self, fake_gateway: RazorpayAdapter
     ) -> None:
-        composer = PaymentComposer(fake_client, charges=ChargesConfig(fee_rate=Decimal(0)))
+        composer = PaymentComposer(fake_gateway, charges=ChargesConfig(fee_rate=Decimal(0)))
 
         result = composer.create_order(199_900, mode=PaymentMode.WITH_CHARGES)
 
         assert result.amount_paise == 199_900
         assert result.fee_paise == 0
 
-    def test_configured_rounding_policy_is_applied(self, fake_client: FakeRazorpayClient) -> None:
+    def test_configured_rounding_policy_is_applied(self, fake_gateway: RazorpayAdapter) -> None:
         half_up = PaymentComposer(
-            fake_client, charges=ChargesConfig(fee_rate=Decimal("0.952"))
+            fake_gateway, charges=ChargesConfig(fee_rate=Decimal("0.952"))
         ).create_order(3, mode=PaymentMode.WITH_CHARGES)
         round_down = PaymentComposer(
-            fake_client,
+            fake_gateway,
             charges=ChargesConfig(fee_rate=Decimal("0.952"), rounding=RoundingPolicy.ROUND_DOWN),
         ).create_order(3, mode=PaymentMode.WITH_CHARGES)
 
@@ -157,17 +159,17 @@ class TestWithChargesMode:
         assert round_down.amount_paise == 62
         assert round_down.net_paise == 3
 
-    def test_requires_a_charges_config(self, fake_client: FakeRazorpayClient) -> None:
-        composer = PaymentComposer(fake_client)
+    def test_requires_a_charges_config(self, fake_gateway: RazorpayAdapter) -> None:
+        composer = PaymentComposer(fake_gateway)
 
         with pytest.raises(PaymentComposeError, match="requires a ChargesConfig"):
             composer.create_order(100_000, mode=PaymentMode.WITH_CHARGES)
 
     def test_no_order_is_created_without_a_charges_config(
-        self, fake_client: FakeRazorpayClient
+        self, fake_gateway: RazorpayAdapter, fake_client: FakeRazorpayClient
     ) -> None:
         with pytest.raises(PaymentComposeError):
-            PaymentComposer(fake_client).create_order(100_000, mode=PaymentMode.WITH_CHARGES)
+            PaymentComposer(fake_gateway).create_order(100_000, mode=PaymentMode.WITH_CHARGES)
 
         assert fake_client.created_orders == []
 
@@ -178,26 +180,33 @@ class TestWithChargesMode:
         )
 
 
-class TestClientContract:
-    def test_composer_exposes_the_client_untouched(self, fake_client: FakeRazorpayClient) -> None:
-        composer = PaymentComposer(fake_client)
+class TestGatewayContract:
+    def test_composer_exposes_the_gateway_untouched(self, fake_gateway: RazorpayAdapter) -> None:
+        composer = PaymentComposer(fake_gateway)
 
-        assert composer.client is fake_client
+        assert composer.gateway is fake_gateway
 
-    @pytest.mark.parametrize("bad_client", [object(), None, "client"])
-    def test_objects_that_are_not_clients_are_rejected(self, bad_client: object) -> None:
-        with pytest.raises(TypeError, match="client must be a configured razorpay"):
-            PaymentComposer(bad_client)  # type: ignore[arg-type]
+    @pytest.mark.parametrize("bad_gateway", [object(), None, "client"])
+    def test_objects_that_are_not_gateways_are_rejected(self, bad_gateway: object) -> None:
+        with pytest.raises(TypeError, match="gateway must be a PaymentGateway"):
+            PaymentComposer(bad_gateway)  # type: ignore[arg-type]
 
-    def test_a_client_class_is_not_an_instance(self) -> None:
+    def test_a_gateway_class_is_not_an_instance(self) -> None:
         """Passing the class instead of an instance slips past mypy; the guard catches it."""
-        with pytest.raises(TypeError, match="client must be a configured razorpay"):
-            PaymentComposer(FakeRazorpayClient)
+        with pytest.raises(TypeError, match="gateway must be a PaymentGateway"):
+            PaymentComposer(FakeRazorpayClient)  # type: ignore[arg-type]
 
-    def test_the_official_client_satisfies_the_protocol(self) -> None:
+    def test_a_raw_client_is_no_longer_a_gateway(self, fake_client: FakeRazorpayClient) -> None:
+        """The composer speaks the gateway protocol, never a provider SDK directly."""
+        with pytest.raises(TypeError, match="gateway must be a PaymentGateway"):
+            PaymentComposer(fake_client)  # type: ignore[arg-type]
+
+    def test_the_official_client_satisfies_the_protocol_when_adapted(self) -> None:
         """tranchepay composes with the real client without touching the network."""
         razorpay = pytest.importorskip("razorpay")
 
         client = razorpay.Client(auth=("rzp_test_placeholder", "placeholder_secret"))
+        adapter = RazorpayAdapter(client)
 
-        assert PaymentComposer(client).client is client
+        assert isinstance(adapter, PaymentGateway)
+        assert PaymentComposer(adapter).gateway is adapter

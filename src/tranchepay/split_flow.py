@@ -21,12 +21,12 @@ from .exceptions import SessionStateError
 from .models import DEFAULT_CURRENCY, OrderResult, SplitConfig, SplitSession
 from .money import require_paise
 from .orders import (
-    create_razorpay_order,
+    create_order,
     create_tranche_order,
     ensure_tranche_order,
     order_result,
 )
-from .protocol import RazorpayClientProtocol
+from .protocol import PaymentGateway
 from .session_locks import hold
 from .split import build_session, plan_tranches
 from .split_recovery import SplitRecovery
@@ -40,7 +40,7 @@ class SplitFlow:
     """Drives one split session at a time through its tranches.
 
     Args:
-        client: Configured Razorpay client (used as-is, never mutated).
+        gateway: Provider adapter (used as-is, never mutated).
         store: Where sessions are persisted between calls.
         config: Tranche ceiling; defaults to the ₹1,999 :class:`SplitConfig`.
         currency: Fallback ISO-4217 code for orders created by this flow.
@@ -48,13 +48,13 @@ class SplitFlow:
 
     def __init__(
         self,
-        client: RazorpayClientProtocol,
+        gateway: PaymentGateway,
         store: SessionStore,
         *,
         config: SplitConfig | None = None,
         currency: str = DEFAULT_CURRENCY,
     ) -> None:
-        self._client = client
+        self._gateway = gateway
         self._store = store
         self._config = config if config is not None else SplitConfig()
         self._currency = currency
@@ -88,15 +88,15 @@ class SplitFlow:
         Raises:
             TypeError: If ``amount_paise`` is not an ``int``.
             ValueError: If ``amount_paise`` is not positive.
-            PaymentComposeError: If Razorpay returns no usable order id.
+            PaymentComposeError: If the provider returns no usable order id.
         """
         require_paise(amount_paise, "amount_paise")
         order_currency = currency or self._currency
         plan = plan_tranches(amount_paise, self._config.tranche_paise)
 
         if not plan.requires_session:
-            raw = create_razorpay_order(
-                self._client, amount_paise, currency=order_currency, receipt=receipt, notes=notes
+            raw = create_order(
+                self._gateway, amount_paise, currency=order_currency, receipt=receipt, notes=notes
             )
             return order_result(
                 raw,
@@ -107,8 +107,8 @@ class SplitFlow:
             )
 
         session = build_session(plan, currency=order_currency)
-        raw = create_razorpay_order(
-            self._client,
+        raw = create_order(
+            self._gateway,
             plan.amounts_paise[0],
             currency=order_currency,
             receipt=receipt,
@@ -137,7 +137,7 @@ class SplitFlow:
         """Verify a tranche payment and, if more remain, create the next order.
 
         Steps, in order: verify the checkout signature with
-        ``client.utility.verify_payment_signature``; load the session; reject the
+        ``gateway.verify_signature``; load the session; reject the
         call if the order does not belong to the session or the tranche is not the
         current pending one; fetch the payment and require ``status ==
         "captured"`` with ``amount`` equal to the tranche amount; mark the tranche
@@ -166,7 +166,7 @@ class SplitFlow:
             SessionStateError: If the order belongs to another session, the
                 tranche is not the current pending one, or the session is closed.
         """
-        verify_checkout_signature(self._client, order_id, payment_id, signature)
+        verify_checkout_signature(self._gateway, order_id, payment_id, signature)
 
         with hold(session_id):
             session = load_session(self._store, session_id)
@@ -194,7 +194,7 @@ class SplitFlow:
                 )
                 raise SessionStateError(msg)
 
-            require_captured_payment(self._client, payment_id, tranche)
+            require_captured_payment(self._gateway, payment_id, tranche)
             tranche.status = TrancheStatus.PAID
             tranche.payment_id = payment_id
             session.status = (
@@ -208,7 +208,7 @@ class SplitFlow:
             if next_tranche is None:  # pragma: no cover - unreachable while not fully paid
                 msg = f"session {session_id} has no pending tranche to collect"
                 raise SessionStateError(msg)
-            return create_tranche_order(self._client, self._store, session, next_tranche.index)
+            return create_tranche_order(self._gateway, self._store, session, next_tranche.index)
 
     def abort_and_refund(self, session_id: str) -> SplitSession:
         """Refund every paid tranche of a session and mark the session aborted.
@@ -253,7 +253,7 @@ class SplitFlow:
     def _recovery(self) -> SplitRecovery:
         """Return the refund/resume helper, building it on first use."""
         if self._recovery_helper is None:
-            self._recovery_helper = SplitRecovery(self._client, self._store)
+            self._recovery_helper = SplitRecovery(self._gateway, self._store)
         return self._recovery_helper
 
     def _pending_order(self, session: SplitSession) -> OrderResult | None:
@@ -261,4 +261,4 @@ class SplitFlow:
         pending = session.next_pending_tranche()
         if pending is None:
             return None
-        return ensure_tranche_order(self._client, self._store, session, pending.index)
+        return ensure_tranche_order(self._gateway, self._store, session, pending.index)

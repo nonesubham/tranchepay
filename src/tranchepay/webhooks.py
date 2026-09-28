@@ -1,27 +1,28 @@
-"""Webhook verification, delegated to the client's own utility resource."""
+"""Webhook verification, delegated to the gateway's own verifier."""
 
 from __future__ import annotations
 
 from .exceptions import VerificationError
-from .protocol import RazorpayClientProtocol
+from .protocol import PaymentGateway
 
 __all__ = ["verify_webhook"]
 
 
 def verify_webhook(
-    client: RazorpayClientProtocol,
+    gateway: PaymentGateway,
     body: str,
     signature: str,
     secret: str,
 ) -> bool:
-    """Verify a Razorpay webhook payload against ``secret``.
+    """Verify a webhook payload against ``secret``.
 
-    The signature itself is checked by ``client.utility.verify_webhook_signature``
-    (i.e. by Razorpay's own HMAC implementation); this helper only normalises the
-    outcome into this library's exception hierarchy.
+    The signature itself is checked by the gateway
+    (``gateway.verify_webhook_signature``, i.e. the provider's own HMAC
+    implementation); this helper only normalises the outcome into this library's
+    exception hierarchy.
 
     Args:
-        client: The configured Razorpay client to delegate verification to.
+        gateway: The provider adapter to delegate verification to.
         body: Raw request body, exactly as received, as ``str`` or ``bytes``.
         signature: Value of the ``X-Razorpay-Signature`` header.
         secret: Webhook secret configured in the Razorpay dashboard. This is the
@@ -31,11 +32,11 @@ def verify_webhook(
         ``True`` when the signature is valid.
 
     Raises:
-        VerificationError: If the signature is invalid, or the client raised
+        VerificationError: If the signature is invalid, or the gateway raised
             while verifying. The original exception is chained as ``__cause__``.
     """
     try:
-        result = client.utility.verify_webhook_signature(body, signature, secret)
+        result = gateway.verify_webhook_signature(body, signature, secret)
     except Exception as exc:
         msg = "webhook signature verification failed"
         raise VerificationError(msg) from exc

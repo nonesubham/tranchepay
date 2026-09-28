@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# Run the opt-in Razorpay sandbox integration suite.
+# Run the opt-in live sandbox integration suites.
 #
-#   ./run_integration.sh                # every integration test
-#   ./run_integration.sh -k exact       # anything else is forwarded to pytest
+#   ./run_integration.sh                 # every suite whose credentials are set
+#   ./run_integration.sh -k phonepe      # anything else is forwarded to pytest
 #
-# Credentials come from the environment, or from a gitignored .env file
-# (copy .env.example and fill in your TEST keys). No key is ever hardcoded.
+# Credentials come from the environment, or from a gitignored .env file (copy
+# .env.example and fill in your TEST keys). No key is ever hardcoded, and a
+# suite whose credentials are absent is skipped rather than failed.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -18,9 +19,17 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-if [[ -z "${RAZORPAY_KEY_ID:-}" || -z "${RAZORPAY_KEY_SECRET:-}" ]]; then
-  echo "error: RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are not set." >&2
-  echo "       cp .env.example .env  and fill in your Razorpay TEST keys." >&2
+files=()
+if [[ -n "${RAZORPAY_KEY_ID:-}" && -n "${RAZORPAY_KEY_SECRET:-}" ]]; then
+  files+=("tests/test_integration_razorpay.py")
+fi
+if [[ -n "${PHONEPE_MERCHANT_ID:-}" && -n "${PHONEPE_SALT_KEY:-}" ]]; then
+  files+=("tests/test_integration_phonepe.py")
+fi
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "error: no sandbox credentials are set." >&2
+  echo "       cp .env.example .env and fill in the Razorpay and/or PhonePe TEST keys." >&2
   exit 1
 fi
 
@@ -32,5 +41,5 @@ if [[ -z "${PYTHON:-}" ]]; then
   fi
 fi
 
-echo "==> live Razorpay sandbox tests, key ${RAZORPAY_KEY_ID:0:12}..."
-exec "$PYTHON" -m pytest tests/test_integration_razorpay.py -v -m integration "$@"
+echo "==> live sandbox tests: ${files[*]}"
+exec "$PYTHON" -m pytest "${files[@]}" -v "$@"

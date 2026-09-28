@@ -10,10 +10,18 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import threading
+from collections.abc import Sequence
 from typing import Any
 
-__all__ = ["FakeApiError", "FakeRazorpayClient", "FakeSignatureError"]
+__all__ = [
+    "FakeApiError",
+    "FakeHttpClient",
+    "FakeHttpResponse",
+    "FakeRazorpayClient",
+    "FakeSignatureError",
+]
 
 
 class FakeApiError(Exception):
@@ -189,3 +197,60 @@ class FakeUtilityResource:
             msg = "Razorpay Signature Verification Failed"
             raise FakeSignatureError(msg)
         return True
+
+
+class FakeHttpResponse:
+    """A minimal stand-in for ``httpx.Response`` for the HTTP adapters.
+
+    Only the attributes :class:`~tranchepay.gateways.base.HttpGatewayAdapter`
+    reads are implemented: ``status_code``, ``content``, ``text`` and ``json``.
+    """
+
+    def __init__(self, *, status_code: int = 200, payload: Any = None) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.content = b"" if payload is None else json.dumps(payload).encode()
+        self.text = self.content.decode()
+
+    def json(self) -> Any:
+        """Return the decoded body, mirroring ``httpx.Response.json``."""
+        if self._payload is None:
+            msg = "response has no JSON body"
+            raise ValueError(msg)
+        return self._payload
+
+
+class FakeHttpClient:
+    """Records every HTTP call and replays queued responses; no network access.
+
+    Args:
+        responses: Responses to hand back in call order. A default empty ``200``
+            object is returned once the queue is exhausted.
+    """
+
+    def __init__(self, responses: Sequence[FakeHttpResponse] | None = None) -> None:
+        self.responses: list[FakeHttpResponse] = list(responses or [])
+        self.requests: list[dict[str, Any]] = []
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json: Any = None,
+        data: Any = None,
+    ) -> FakeHttpResponse:
+        """Record ``method``/``url``/body and return the next queued response."""
+        self.requests.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": dict(headers or {}),
+                "json": json,
+                "data": data,
+            }
+        )
+        if self.responses:
+            return self.responses.pop(0)
+        return FakeHttpResponse(payload={})

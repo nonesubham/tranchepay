@@ -1,32 +1,37 @@
 # tranchepay Documentation
 
-`tranchepay` is a small Python library that adds three payment modes to a Razorpay
-integration you already have: charge the exact amount, gross the amount up so the
+`tranchepay` is a small Python library that adds three payment modes to a payment
+gateway you already have: charge the exact amount, gross the amount up so the
 customer covers the gateway fee, or collect one large amount as a sequence of
-tranches of at most ₹1,999.
+tranches of at most ₹1,999. Razorpay, Paytm and PhonePe ship as adapters today.
 
-It is a **composition** library, not a client. You build and configure
-`razorpay.Client` yourself and hand it to `tranchepay`:
+It is a **composition** library, not a client. You build and configure the provider
+client yourself (or let the factory do it) and hand the adapter to `tranchepay`:
 
 - **Composition over inheritance.** `tranchepay` never subclasses, monkey-patches,
-  or forks `razorpay.Client`. It holds a reference to your instance and calls its
-  public `order`, `payment`, and `utility` resources.
-- **You own the client.** Your keys, timeouts, proxies, retry policy, logging, and
-  version pinning are unchanged. Swapping `tranchepay` in or out does not change how
-  your application talks to Razorpay.
+  or forks a provider SDK. An adapter holds a reference to your instance and calls
+  only its public surface.
+- **You own the credentials.** Your keys, timeouts, proxies, retry policy, logging,
+  and version pinning are unchanged. Swapping `tranchepay` in or out does not change
+  how your application talks to the provider.
+- **One narrow interface.** Everything above the adapters is written against the
+  `PaymentGateway` protocol, so the composer, the split flow and the recovery code
+  never name a provider.
 - **Integer paise everywhere.** Amounts are `int` paise and fee rates are
   `decimal.Decimal`. A `float` is rejected rather than silently rounded.
 - **No hidden arithmetic.** Gross-up rounding is an explicit configuration value.
 
-Because it only needs an object exposing `order`, `payment`, and `utility`,
-`tranchepay` is also easy to test: a stub client satisfies it structurally, so the
-default test suite makes no network calls.
+Because the composer only needs a `PaymentGateway`, `tranchepay` is also easy to
+test: a stub gateway satisfies it structurally, so the default test suite makes no
+network calls.
 
 ## Contents
 
 - [Introduction](#introduction)
 - [Installation](#installation)
 - [Initialization](#initialization)
+- [Gateways & the Factory](#gateways--the-factory)
+- [PhonePe Integration](#phonepe-integration)
 - [Usage Guide](#usage-guide)
   - [Mode 1: EXACT](#mode-1-exact--the-merchant-absorbs-the-fee)
   - [Mode 2: WITH_CHARGES](#mode-2-with_charges--the-customer-covers-the-fee)
@@ -47,7 +52,7 @@ Three modes, one composer:
 | `PaymentMode.WITH_CHARGES` | `round(amount_paise / (1 - fee_rate))` | Passing the gateway fee on to the customer, where lawful. |
 | `PaymentMode.SPLIT` | Sequential tranches of at most `tranche_paise` | Collecting a large amount in pieces, e.g. to stay under a UPI MDR threshold. |
 
-All three return an `OrderResult` wrapping the untouched Razorpay response, so
+All three return an `OrderResult` wrapping the untouched provider response, so
 anything the SDK gives you is still there under `.raw`.
 
 ## Installation
@@ -62,8 +67,16 @@ Requirements:
 - `razorpay>=1.4` — installed automatically as a dependency.
 - `pydantic>=2.6` — installed automatically.
 
-There are no runtime extras. The optional development extras add the test and
-type-checking toolchain (`pytest`, `pytest-cov`, `ruff`, `mypy`, `python-dotenv`).
+Razorpay is the reference adapter and is installed as a dependency. The Paytm and
+PhonePe adapters build their HTTP requests with `httpx`, which is an optional extra:
+install it if you will drive those gateways.
+
+```bash
+pip install "tranchepay[http]"
+```
+
+The optional development extras add the test and type-checking toolchain
+(`pytest`, `pytest-cov`, `ruff`, `mypy`, `python-dotenv`, `httpx`).
 
 Working on tranchepay itself? Clone it and install an editable copy with those
 extras:
@@ -83,27 +96,45 @@ pip install "tranchepay @ git+https://github.com/nonesubham/tranchepay.git"
 
 ## Initialization
 
-Configure the official client exactly as you always would, then pass it in.
-`tranchepay` does not care how you built it: any configured client works, as does
-any object exposing `order`, `payment`, and `utility` with the same call shapes.
+Ask the factory for a gateway, then hand it to the composer. The factory is
+tranchepay's answer to JDBC's `DriverManager`: you name a provider, it returns the
+adapter, and nothing downstream knows which one it got.
 
 ```python
 from decimal import Decimal
 
-import razorpay
-from tranchepay import ChargesConfig, PaymentComposer, SplitConfig
+from tranchepay import ChargesConfig, GatewayFactory, PaymentComposer, SplitConfig
 
-# 1. Your client, your configuration, your credentials.
-client = razorpay.Client(auth=("rzp_test_xxxxxxxxxxxx", "your_key_secret"))
+# 1. Ask for the adapter. Credentials are read from your config, never hardcoded.
+gateway = GatewayFactory.get_gateway(
+    "razorpay",
+    {"key_id": "rzp_test_xxxxxxxxxxxx", "key_secret": "your_key_secret"},
+)
 
-# 2. Hand it to the composer. The client is stored as-is and never mutated.
+# 2. Hand it to the composer. The adapter is stored as-is and never mutated.
 composer = PaymentComposer(
-    client,
+    gateway,
     charges=ChargesConfig(fee_rate=Decimal("0.0236")),  # only needed for WITH_CHARGES
     split=SplitConfig(tranche_paise=199_900),  # only needed for SPLIT
 )
 
-composer.client is client  # True - the same object you passed in
+composer.gateway is gateway  # True - the same object you passed in
+```
+
+Constructing an adapter performs no I/O; the first API call happens when the
+composer uses it. If your application already owns a configured client, wrap it
+directly or pass it to the factory:
+
+```python
+import razorpay
+
+from tranchepay import RazorpayAdapter
+
+client = razorpay.Client(auth=("rzp_test_xxxxxxxxxxxx", "your_key_secret"))
+
+gateway = RazorpayAdapter(client)  # the client is stored as-is and never mutated
+# ...or, equivalently:
+gateway = GatewayFactory.get_gateway("razorpay", {"client": client})
 ```
 
 `PaymentComposer` signature:
@@ -112,7 +143,7 @@ composer.client is client  # True - the same object you passed in
 class PaymentComposer:
     def __init__(
         self,
-        client,  # configured razorpay.Client (or anything exposing order/payment/utility)
+        gateway,  # any PaymentGateway: a built-in adapter or your own
         *,
         charges: ChargesConfig | None = None,
         split: SplitConfig | None = None,
@@ -130,9 +161,240 @@ class PaymentComposer:
 - `currency` is the default for every order this composer creates; each
   `create_order` call may override it.
 
-The constructor validates the client structurally and raises `TypeError` if the
-object does not expose `order`, `payment`, and `utility`. This is a guard against
-passing a misconfigured or unrelated object, not a subclass check.
+The constructor validates the gateway structurally and raises `TypeError` if the
+object does not implement the `PaymentGateway` methods. A raw provider client is
+*not* a gateway: wrap it in an adapter first. This is a guard against passing a
+misconfigured or unrelated object, not a subclass check.
+
+## Gateways & the Factory
+
+Every provider is reached through one protocol, and every adapter is obtained
+through one factory. That is what lets the same composer, split flow and recovery
+code drive Razorpay, Paytm and PhonePe without a single provider-specific branch.
+
+### The `PaymentGateway` protocol
+
+An adapter is anything that implements these five methods. Amounts are always
+integer paise, and adapters return the provider's response payload unchanged so no
+field tranchepay does not read is lost.
+
+```python
+from typing import Protocol
+
+
+class PaymentGateway(Protocol):
+    def create_order(
+        self,
+        amount_paise: int,
+        *,
+        currency: str | None = None,
+        receipt: str | None = None,
+        notes: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def fetch_order(self, order_id: str) -> dict[str, Any]: ...
+
+    def fetch_payment(self, payment_id: str) -> dict[str, Any]: ...
+
+    def verify_signature(self, order_id: str, payment_id: str, signature: str) -> bool: ...
+
+    def verify_webhook_signature(self, body: str, signature: str, secret: str) -> bool: ...
+
+    def refund_payment(self, payment_id: str, amount_paise: int) -> dict[str, Any]: ...
+```
+
+### The shipped adapters
+
+| Provider | Adapter | Credentials | Status |
+| --- | --- | --- | --- |
+| Razorpay | `RazorpayAdapter` | `key_id`, `key_secret` (or a pre-built `client`) | Reference implementation, fully supported. |
+| Paytm | `PaytmAdapter` | `merchant_id`, `merchant_key` (optional `website`, `callback_url`) | Structural: request building is complete; `execute()` must be implemented for your account. |
+| PhonePe | `PhonePeAdapter` | `merchant_id`, `salt_key` (optional `salt_index`, `env`, `auth_mode`) | Implemented: OAuth Standard Checkout v2 by default, classic X-VERIFY also supported. See [PhonePe Integration](#phonepe-integration). |
+
+Registering a gateway and using it, with no change to the rest of your code:
+
+```python
+from tranchepay import GatewayFactory, PaymentComposer
+
+composer = PaymentComposer(
+    GatewayFactory.get_gateway("phonepe", {"merchant_id": "M123", "salt_key": "..."})
+)
+```
+
+An unknown provider raises `UnsupportedGatewayError`. A missing required credential
+raises `GatewayConfigurationError`:
+
+```python
+from tranchepay import UnsupportedGatewayError, GatewayConfigurationError
+
+try:
+    gateway = GatewayFactory.get_gateway("stripe", {})
+except UnsupportedGatewayError as exc:
+    ...  # "stripe" is not registered
+```
+
+### What "structural" means for Paytm
+
+Paytm does not ship a first-party Python SDK, so its adapter is written directly
+against Paytm's REST API. Everything tranchepay needs is implemented and tested
+*except* the final HTTP call:
+
+- The class implements the full `PaymentGateway` protocol.
+- Credentials are validated on construction.
+- Requests are built completely — URL, headers, JSON body, paise-to-rupee
+  conversion — and exposed as a `GatewayRequest` you can inspect.
+- `execute()` raises `NotImplementedError` until you fill it in, because sending a
+  call needs your merchant account's host, signing rules and checksum algorithm.
+
+```python
+from tranchepay import PaytmAdapter
+
+paytm = PaytmAdapter({"merchant_id": "M123", "merchant_key": "..."})
+
+request = paytm.refund_request("pay_123", 1_500)
+request.method  # "POST"
+request.url  # "https://api.paytm.com/v2/refund/apply"
+request.json  # {"mid": "M123", "txnId": "pay_123", "refundAmount": {"value": "15.00", ...}}
+
+paytm.create_order(1_500)  # raises NotImplementedError until execute() is written
+```
+
+Subclass the adapter and implement `execute()` (or inject an `httpx.Client` and
+implement the signing) to go live. The base `HttpGatewayAdapter` handles URL
+construction, the lazy `httpx` import, and the `tranchepay[http]` install hint.
+
+PhonePe is different: `PhonePeAdapter` is fully implemented against PhonePe's
+REST API and performs live calls. See [PhonePe Integration](#phonepe-integration).
+
+### Registering your own gateway
+
+`register_gateway` is the `DriverManager.registerDriver` analogue. It takes any
+callable that accepts the credentials mapping and returns a `PaymentGateway`; an
+adapter class whose constructor takes the credentials mapping can be registered
+directly.
+
+```python
+from tranchepay import GatewayFactory, PaymentComposer
+
+
+class MyGateway:
+    def __init__(self, credentials: dict) -> None:
+        self.api_key = credentials["api_key"]
+
+    def create_order(
+        self, amount_paise, *, currency=None, receipt=None, notes=None
+    ): ...  # call your provider
+
+    def fetch_order(self, order_id): ...
+    def fetch_payment(self, payment_id): ...
+    def verify_signature(self, order_id, payment_id, signature): ...
+    def verify_webhook_signature(self, body, signature, secret): ...
+    def refund_payment(self, payment_id, amount_paise): ...
+
+
+GatewayFactory.register_gateway("my-gateway", MyGateway)
+gateway = GatewayFactory.get_gateway("my-gateway", {"api_key": "..."})
+composer = PaymentComposer(gateway)
+```
+
+Provider names are matched case-insensitively. `GatewayFactory.available_gateways()`
+lists everything registered.
+
+## PhonePe Integration
+
+PhonePe does not model "orders" the way Razorpay does, and it ships no first-party
+Python SDK. `PhonePeAdapter` talks to PhonePe's REST API directly and maps its flow
+onto the `PaymentGateway` protocol, so the composer drives it unchanged.
+
+### The PhonePe flow
+
+1. **Pay request.** Send the amount to PhonePe and get back a `redirectUrl`.
+2. **Redirect.** Send the customer to that URL to finish paying.
+3. **Status check.** There is no capture call and no checkout signature to verify.
+   You learn the outcome by polling the status endpoint with the same
+   `merchantTransactionId` you sent.
+
+```text
+merchant  ── POST /checkout/v2/pay ───────────▶ PhonePe
+merchant  ◀── redirectUrl ───────────────────── PhonePe
+customer  ── pays in the browser ─────────────▶ PhonePe
+merchant  ── GET /checkout/v2/order/{id}/status ▶ PhonePe   PENDING → COMPLETED
+```
+
+Each payment needs a **unique** `merchantTransactionId`. PhonePe rejects a reused
+id with `DUPLICATE_TXN_REQUEST`. The split flow generates one per tranche, and
+`create_order` generates one when you do not pass `merchant_transaction_id`.
+
+### Configuration
+
+PhonePe has two integration styles and the adapter implements both:
+
+| `auth_mode` | Flow | Endpoints |
+| --- | --- | --- |
+| `"oauth"` (default) | Standard Checkout v2: the client id and secret are exchanged for a short-lived `O-Bearer` token. | `/checkout/v2/pay`, `/checkout/v2/order/{id}/status` |
+| `"x-verify"` | Classic PG: the base64 JSON body is signed with `SHA256(base64 + endpoint + saltKey) + "###" + saltIndex`. | `/pg/v1/pay`, `/pg/v1/status/{merchantId}/{txnId}` |
+
+Credentials come from the environment and are never hardcoded:
+
+```bash
+export PHONEPE_MERCHANT_ID=...   # client id
+export PHONEPE_SALT_KEY=...      # client secret / salt key
+export PHONEPE_SALT_INDEX=1      # optional, defaults to 1
+export PHONEPE_ENV=preprod       # optional: preprod (default) or production
+```
+
+```python
+import os
+from tranchepay import GatewayFactory, PaymentComposer, PaymentMode
+
+gateway = GatewayFactory.get_gateway(
+    "phonepe",
+    {
+        "merchant_id": os.environ["PHONEPE_MERCHANT_ID"],
+        "salt_key": os.environ["PHONEPE_SALT_KEY"],
+        "salt_index": os.environ.get("PHONEPE_SALT_INDEX", "1"),
+        "env": os.environ.get("PHONEPE_ENV", "preprod"),
+    },
+)
+
+composer = PaymentComposer(gateway)
+
+result = composer.create_order(50_000, mode=PaymentMode.EXACT)
+redirect_url = result.raw["redirect_url"]  # send the customer here
+```
+
+### Webhooks vs. status checks
+
+These are two different things, and PhonePe uses both:
+
+- **Webhook / callback verification.** PhonePe does not sign order/payment pairs;
+  it signs payloads. The `X-VERIFY` header is
+  `SHA256(payload + saltKey) + "###" + saltIndex`. Verify it with
+  `adapter.verify_signature(payload, signature)` (or `verify_webhook_signature`).
+- **Payment status.** To confirm a payment actually settled, call
+  `adapter.fetch_payment(merchant_transaction_id)` and read `state` / `status`.
+
+```python
+# Incoming PhonePe callback:
+body = request.get_data(as_text=True)  # the exact bytes PhonePe signed
+signature = request.headers["X-VERIFY"]
+
+if gateway.verify_signature(body, signature):
+    status = gateway.fetch_payment(merchant_transaction_id)
+    if status["state"] == "COMPLETED":
+        ...  # settle the order
+```
+
+### Refunds
+
+`PhonePeAdapter.refund_payment(...)` raises `NotImplementedError`. PhonePe refunds
+go through a separate Refund API with its own signing and state machine, which
+this adapter does not model. Refund from the PhonePe dashboard, then reconcile the
+session.
+
+> The composer's `abort_and_refund` calls `refund_payment` for every paid tranche,
+> so aborting a PhonePe-backed split session raises `NotImplementedError` until
+> refunds are supported. Plan for manual reconciliation.
 
 ## Usage Guide
 
@@ -190,7 +452,7 @@ from decimal import Decimal
 from tranchepay import ChargesConfig, PaymentComposer, PaymentMode, RoundingPolicy
 
 composer = PaymentComposer(
-    client,
+    gateway,
     charges=ChargesConfig(
         fee_rate=Decimal("0.0236"),  # 2.36%, as a Decimal - never a float
         rounding=RoundingPolicy.ROUND_HALF_UP,  # the default
@@ -311,7 +573,7 @@ session and returns the first tranche's order:
 ```python
 from tranchepay import PaymentComposer, PaymentMode, SplitConfig
 
-composer = PaymentComposer(client, split=SplitConfig(tranche_paise=199_900))
+composer = PaymentComposer(gateway, split=SplitConfig(tranche_paise=199_900))
 
 first = composer.create_order(450_000, mode=PaymentMode.SPLIT, receipt="ord-1043")
 
@@ -337,12 +599,12 @@ next_order = composer.verify_and_advance(
 
 What it does, in order:
 
-1. Verifies the signature with Razorpay's own
-   `client.utility.verify_payment_signature`.
+1. Verifies the signature through the gateway
+   (`gateway.verify_signature`), which delegates to the provider's own verifier.
 2. Loads the session and checks that the order belongs to it and is its current
    pending tranche. A replay for an already-paid tranche returns the current
    pending order instead of advancing again.
-3. Fetches the payment with `client.payment.fetch` and requires `status == "captured"`.
+3. Fetches the payment with `gateway.fetch_payment` and requires `status == "captured"`.
 4. Requires the captured amount to equal that tranche's amount, else
    `AmountMismatchError`.
 5. Marks the tranche `PAID` and persists the session.
@@ -404,7 +666,7 @@ session.tranches[0].status  # TrancheStatus.REFUNDED
 - Unpaid tranches are left `PENDING`. `ABORTED` is terminal, so they can never be
   collected afterwards.
 - A `COMPLETE` session cannot be aborted (`SessionStateError`); refund those
-  payments directly through your client instead.
+  payments directly through your gateway instead.
 - If a refund call fails midway, `PartialPaymentError` is raised with the
   already-refunded tranches persisted. Calling `abort_and_refund` again resumes
   from the first tranche that still needs refunding — it is safe to retry.
@@ -434,10 +696,10 @@ collection.
 ## Webhook Verification
 
 Razorpay signs webhooks with a **webhook secret** configured in the dashboard. That
-secret is *not* your API key secret. `tranchepay` delegates the HMAC to the SDK's
-`client.utility.verify_webhook_signature` and normalizes the outcome into this
-library's exception hierarchy, so nothing is re-implemented and the original
-exception is chained as `__cause__`.
+secret is *not* your API key secret. `tranchepay` delegates the HMAC to the gateway
+(`gateway.verify_webhook_signature`, i.e. the provider's own verifier) and
+normalizes the outcome into this library's exception hierarchy, so nothing is
+re-implemented and the original exception is chained as `__cause__`.
 
 ```python
 from tranchepay import VerificationError, verify_webhook
@@ -450,7 +712,7 @@ def razorpay_webhook():
     secret = settings.RAZORPAY_WEBHOOK_SECRET  # from the dashboard, not the API key secret
 
     try:
-        verify_webhook(client, raw_body, signature, secret)
+        verify_webhook(gateway, raw_body, signature, secret)
     except VerificationError:
         return {"error": "invalid signature"}, 400
 
@@ -462,7 +724,7 @@ def razorpay_webhook():
 Signature:
 
 ```python
-def verify_webhook(client, body, signature, secret) -> bool: ...  # True on success
+def verify_webhook(gateway, body, signature, secret) -> bool: ...  # True on success
 ```
 
 Pass the body exactly as received. Re-serializing JSON before verifying changes the
@@ -485,7 +747,9 @@ PaymentComposeError
 │   └── AmountMismatchError
 ├── SessionNotFoundError
 ├── SessionStateError
-└── PartialPaymentError
+├── PartialPaymentError
+├── UnsupportedGatewayError
+└── GatewayConfigurationError
 ```
 
 | Exception | Raised when |
@@ -496,6 +760,8 @@ PaymentComposeError
 | `SessionNotFoundError` | The session id is unknown to the configured `SessionStore`. |
 | `SessionStateError` | The operation is illegal for the current state: the order does not belong to the session, it is not the current pending tranche, the session is already closed, or `resume` found an already-paid pending order. |
 | `PartialPaymentError` | A split could not complete or unwind cleanly, e.g. a refund failed midway. Already-applied side effects are persisted; retry the same call to finish the remaining work. |
+| `UnsupportedGatewayError` | `GatewayFactory.get_gateway` was asked for a provider name that is neither built in nor registered. |
+| `GatewayConfigurationError` | An adapter could not be built: a required credential is missing, or the optional dependency it needs (`razorpay`, `httpx`) is not installed. |
 
 `TypeError` and `ValueError` are raised for programmer error rather than API
 failure: a float amount, a non-positive amount, a non-`Decimal` fee rate, or an
@@ -520,25 +786,38 @@ except PaymentComposeError:
 
 A split session is a plain pydantic model, and persistence is behind a protocol
 that is three methods wide. `tranchepay` never imports your persistence code; it
-validates the object structurally when you pass it in.
+validates the object structurally when you pass it in. The composer reaches the
+provider the same way - through the `PaymentGateway` protocol, never a concrete
+SDK - which is why the same session store works for every adapter.
 
 ```text
-                    ┌───────────────────────────┐
-  your app ───────► │ PaymentComposer           │
-                    │  create_order(...)        │
-                    │  verify_and_advance(...)  │
-                    │  abort_and_refund(...)    │
-                    │  resume(...)              │
-                    └─────┬───────────────┬─────┘
-                          │               │
-                  uses as-is│              │save/get/update
-                          ▼               ▼
-             ┌────────────────────┐  ┌────────────────────┐
-             │ razorpay.Client    │  │ SessionStore       │
-             │  .order            │  │  (yours, or the    │
-             │  .payment          │  │   in-memory one)   │
-             │  .utility          │  └────────────────────┘
-             └────────────────────┘
+                      ┌───────────────────────────┐
+  your app ─────────► │ GatewayFactory            │
+                      │  get_gateway("razorpay")  │
+                      └─────────────┬─────────────┘
+                                    │ returns
+                                    ▼
+                      ┌───────────────────────────┐
+  your app ─────────► │ PaymentComposer           │
+                      │  create_order(...)        │
+                      │  verify_and_advance(...)  │
+                      │  abort_and_refund(...)    │
+                      │  resume(...)              │
+                      └─────┬───────────────┬─────┘
+                            │               │
+         drives as-is       │               │ save/get/update
+                            ▼               ▼
+             ┌──────────────────────┐  ┌────────────────────┐
+             │ PaymentGateway       │  │ SessionStore       │
+             │  (Protocol)          │  │  (yours, or the    │
+             └───────────┬──────────┘  │   in-memory one)   │
+                         │ implements  └────────────────────┘
+        ┌────────────────┼────────────────┐
+        ▼                ▼                ▼
+ ┌────────────┐   ┌────────────┐   ┌────────────┐
+ │ Razorpay   │   │ Paytm      │   │ PhonePe    │
+ │ Adapter    │   │ Adapter    │   │ Adapter    │
+ └────────────┘   └────────────┘   └────────────┘
 ```
 
 The shipped `InMemorySessionStore` is thread-safe and copies sessions on the way in
@@ -604,7 +883,7 @@ class RedisSessionStore:
 ```
 
 ```python
-composer = PaymentComposer(client, split=SplitConfig(), store=RedisSessionStore(redis_client))
+composer = PaymentComposer(gateway, split=SplitConfig(), store=RedisSessionStore(redis_client))
 ```
 
 A SQLAlchemy adapter follows the same shape: a table keyed by `session_id`, a `TEXT`

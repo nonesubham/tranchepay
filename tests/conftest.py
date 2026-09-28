@@ -21,6 +21,7 @@ from tranchepay import (
     Tranche,
     TrancheStatus,
 )
+from tranchepay.gateways import RazorpayAdapter
 
 SessionFactory = Callable[..., SplitSession]
 
@@ -59,9 +60,19 @@ def fake_client() -> FakeRazorpayClient:
 
 
 @pytest.fixture
-def composer(fake_client: FakeRazorpayClient) -> PaymentComposer:
-    """A composer wired to the fake client and the default configs."""
-    return PaymentComposer(fake_client, charges=ChargesConfig(fee_rate=Decimal("0.0236")))
+def fake_gateway(fake_client: FakeRazorpayClient) -> RazorpayAdapter:
+    """The shipped Razorpay adapter wrapped around the in-process client.
+
+    Composer-level tests drive the adapter, exactly as production does; the raw
+    ``fake_client`` stays available to assert on the requests that reached it.
+    """
+    return RazorpayAdapter(fake_client)
+
+
+@pytest.fixture
+def composer(fake_gateway: RazorpayAdapter) -> PaymentComposer:
+    """A composer wired to the fake gateway and the default configs."""
+    return PaymentComposer(fake_gateway, charges=ChargesConfig(fee_rate=Decimal("0.0236")))
 
 
 @pytest.fixture
@@ -72,11 +83,11 @@ def split_store() -> InMemorySessionStore:
 
 @pytest.fixture
 def split_composer(
-    fake_client: FakeRazorpayClient, split_store: InMemorySessionStore
+    fake_gateway: RazorpayAdapter, split_store: InMemorySessionStore
 ) -> PaymentComposer:
     """A composer with a small tranche ceiling so tests stay tiny."""
     return PaymentComposer(
-        fake_client,
+        fake_gateway,
         split=SplitConfig(tranche_paise=1_000),
         store=split_store,
         currency="INR",

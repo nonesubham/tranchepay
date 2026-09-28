@@ -15,6 +15,8 @@ from tranchepay import exceptions
         "SessionNotFoundError",
         "SessionStateError",
         "PartialPaymentError",
+        "UnsupportedGatewayError",
+        "GatewayConfigurationError",
     ],
 )
 def test_every_error_is_a_payment_compose_error(name: str) -> None:
@@ -43,6 +45,8 @@ def test_all_is_exported() -> None:
         "SessionNotFoundError",
         "SessionStateError",
         "PartialPaymentError",
+        "UnsupportedGatewayError",
+        "GatewayConfigurationError",
     }
 
 

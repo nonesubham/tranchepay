@@ -15,10 +15,12 @@ from __future__ import annotations
 
 __all__ = [
     "AmountMismatchError",
+    "GatewayConfigurationError",
     "PartialPaymentError",
     "PaymentComposeError",
     "SessionNotFoundError",
     "SessionStateError",
+    "UnsupportedGatewayError",
     "VerificationError",
 ]
 
@@ -64,4 +66,22 @@ class PartialPaymentError(PaymentComposeError):
     state, for example because a refund call failed midway through
     ``abort_and_refund``. Already-applied side effects are persisted, so a retry
     of the same call only processes the remaining tranches.
+    """
+
+
+class UnsupportedGatewayError(PaymentComposeError):
+    """The requested provider name has no adapter registered.
+
+    Raised by :meth:`tranchepay.GatewayFactory.get_gateway` for a provider that
+    is neither built in nor registered with
+    :meth:`~tranchepay.GatewayFactory.register_gateway`.
+    """
+
+
+class GatewayConfigurationError(PaymentComposeError):
+    """A gateway adapter could not be built from the supplied credentials.
+
+    Raised when a required credential is missing, or when the optional
+    dependency a gateway needs (for example ``razorpay`` or ``httpx``) is not
+    installed.
     """

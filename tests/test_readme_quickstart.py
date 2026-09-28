@@ -1,8 +1,8 @@
 """End-to-end run of the README quickstart, so the docs cannot silently rot.
 
-The snippet here mirrors ``README.md``: the same construction, the same three
-modes, and the same callback handling - with the fake client in place of the
-network.
+The snippet here mirrors ``README.md``: the same gateway construction, the same
+three modes, and the same callback handling - with the fake client in place of
+the network.
 """
 
 from __future__ import annotations
@@ -17,18 +17,20 @@ import pytest
 from tests.fakes import FakeRazorpayClient
 from tranchepay import (
     ChargesConfig,
+    GatewayFactory,
     PaymentComposer,
+    PaymentGateway,
     PaymentMode,
+    RazorpayAdapter,
     SessionStatus,
     SplitConfig,
     verify_webhook,
 )
-from tranchepay.protocol import RazorpayClientProtocol
 
 
 def test_readme_quickstart_end_to_end(fake_client: FakeRazorpayClient) -> None:
     composer = PaymentComposer(
-        fake_client,
+        GatewayFactory.get_gateway("razorpay", {"client": fake_client}),
         charges=ChargesConfig(fee_rate=Decimal("0.0236")),  # 2.36% - your rate
         split=SplitConfig(),  # tranche ceiling, default 199_900 paise
     )
@@ -71,12 +73,12 @@ def test_readme_quickstart_end_to_end(fake_client: FakeRazorpayClient) -> None:
 
     body, secret = '{"event":"payment.captured"}', "whsec_test"
     signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
-    assert verify_webhook(fake_client, body, signature, secret) is True
+    assert verify_webhook(composer.gateway, body, signature, secret) is True
 
 
 def test_manual_capture_satisfies_the_captured_check(fake_client: FakeRazorpayClient) -> None:
     """Merchants on manual capture can capture first; verification then passes."""
-    composer = PaymentComposer(fake_client, split=SplitConfig(tranche_paise=1_000))
+    composer = PaymentComposer(RazorpayAdapter(fake_client), split=SplitConfig(tranche_paise=1_000))
     first = composer.create_order(2_000, mode=PaymentMode.SPLIT)
     assert first.session_id is not None
 
@@ -91,11 +93,14 @@ def test_manual_capture_satisfies_the_captured_check(fake_client: FakeRazorpayCl
     assert fake_client.captures == [{"payment_id": "pay_1", "amount": 1_000}]
 
 
-def test_protocol_declares_the_resources_tranchepay_composes(
+def test_the_adapter_is_a_gateway_and_the_raw_client_is_not(
     fake_client: FakeRazorpayClient,
 ) -> None:
-    assert isinstance(fake_client, RazorpayClientProtocol)
-    for resource in ("order", "payment", "utility"):
-        assert hasattr(fake_client, resource)
-    with pytest.raises(TypeError):
+    """The composer's contract is the gateway protocol, not a provider SDK."""
+    adapter = RazorpayAdapter(fake_client)
+
+    assert isinstance(adapter, PaymentGateway)
+    assert adapter.client is fake_client
+    assert not isinstance(fake_client, PaymentGateway)
+    with pytest.raises(TypeError, match="gateway must be a PaymentGateway"):
         PaymentComposer(object())  # type: ignore[arg-type]
