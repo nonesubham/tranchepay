@@ -48,7 +48,7 @@ from .split import SplitPlan, estimate_tranche_count, plan_tranches
 from .store import InMemorySessionStore, SessionStore
 from .webhooks import verify_webhook
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "DEFAULT_CURRENCY",
